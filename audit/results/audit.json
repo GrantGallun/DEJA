@@ -1,0 +1,385 @@
+{
+  "created_at": "2026-10-24T18:28:51.948805+00:00",
+  "snapshot_sha256": {
+    "smartreplay\\cli.py": "b495326f6bb29009b4611e5cd855947aeb08fd7f1c18960aff0fb37b7d9efad4",
+    "smartreplay\\discovery.py": "152fca61c3922500295f9f930d4e313fdf20496238103b1d21701b1a3ca4a5af",
+    "smartreplay\\grouping.py": "54553c04696f348c208af2994a6f9d1679454a418eb8010467f00fef45131189",
+    "smartreplay\\profile.py": "a95d5e9b6e2cf2f46523d5dbb26ffa2b3fcdc3f653d32ddcec97798ed19e06c9",
+    "smartreplay\\report.py": "b732f19fb1e361f5196012a81547646aacf5f2f968e2bbccd28337a6ac2b4764",
+    "smartreplay\\sampling.py": "65654596e1319d2b7d735c4e813a1327ae59aebaf0ace04e59caa5c2c3f42f48",
+    "smartreplay\\variants.py": "7f6b7dae8eb5d113b0471708ed268bfe9b8cf1a23c0252f15f666931b919cb22",
+    "smartreplay\\__init__.py": "3d7ab2f30d443859bbe3a8513a7e1dbfc25b65c38d6bb854f377d25db7da5056",
+    "tools\\make_test_clip.py": "7c196d10a5b8d2756172bd0012908d217afaf20de6273c3ae92265b0fe8b9b87",
+    "tools\\minecraft_truth.py": "8c27d45ba0549e540fdf47d804b01678c6feaf3a782fe02cae294433ec8d976c",
+    "tools\\verify.py": "1dabe7e5e74eb17217a029da83fa78886bf2d85b21641d63dad9e3481ed68819",
+    "tools\\vizdoom_substrate.py": "ec41c075f101a238a9fe226b706688527c52fdca99d75210aca05bfa4d774ea0"
+  },
+  "production_sources_still_match_snapshot": true,
+  "summary": {
+    "checks": 12,
+    "passed": 1,
+    "failed": 11
+  },
+  "checks": [
+    {
+      "name": "Existing synthetic timing score",
+      "source": "tools/verify.py",
+      "passed": true,
+      "expected": 0,
+      "observed": 0,
+      "details": "4 group(s) discovered, 3 truth event(s), tolerance 1.5s\n\nevent     gid  truth  found   tp   prec    rec     f1  roi_iou  mean|dt|\ndeath       0      5      5    5   1.00   1.00   1.00     1.00     0.00s\nkill        1      8      8    8   1.00   1.00   1.00     0.99     0.00s\nround       3      3      4    3   0.75   1.00   0.86     0.07     0.00s\n\npass 3/3 events at f1>=0.8\n1 unmatched group(s) (false positives or genuinely extra elements)\n",
+      "elapsed_s": 0.002
+    },
+    {
+      "name": "No-event clip with no detections passes",
+      "source": "tools/verify.py:69",
+      "passed": false,
+      "expected": 0,
+      "observed": 1,
+      "details": "no groups discovered - nothing to score\n",
+      "elapsed_s": 0.002
+    },
+    {
+      "name": "No-event clip with a false detection fails",
+      "source": "tools/verify.py:109",
+      "passed": false,
+      "expected": 1,
+      "observed": 0,
+      "details": "1 group(s) discovered, 0 truth event(s), tolerance 1.5s\n\nevent     gid  truth  found   tp   prec    rec     f1  roi_iou  mean|dt|\n\npass 0/0 events at f1>=0.8\n1 unmatched group(s) (false positives or genuinely extra elements)\n",
+      "elapsed_s": 0.008
+    },
+    {
+      "name": "Minecraft player name matches exactly",
+      "source": "tools/minecraft_truth.py:133",
+      "passed": false,
+      "expected": 0,
+      "observed": 1,
+      "details": {
+        "detected_player": "Alex",
+        "deaths": [
+          [
+            10.0,
+            "Alexander was slain by Zombie"
+          ]
+        ]
+      },
+      "elapsed_s": 0.002
+    },
+    {
+      "name": "Minecraft recording after midnight aligns earlier log lines",
+      "source": "tools/minecraft_truth.py:110",
+      "passed": false,
+      "expected": [
+        20.0
+      ],
+      "observed": [],
+      "details": {
+        "expected_death_offset_s": 20,
+        "deaths": []
+      },
+      "elapsed_s": 0.002
+    },
+    {
+      "name": "Final occurrence keeps a full sample duration",
+      "source": "smartreplay/grouping.py:295",
+      "passed": false,
+      "expected": [
+        2.0,
+        2.0,
+        2.0
+      ],
+      "observed": [
+        2.0,
+        2.0,
+        1.5
+      ],
+      "details": {
+        "gid": 0,
+        "n_pixels": 100,
+        "roi": [
+          5,
+          5,
+          15,
+          15
+        ],
+        "roi_norm": [
+          0.15625,
+          0.20833,
+          0.46875,
+          0.625
+        ],
+        "boxes": [
+          [
+            5,
+            5,
+            15,
+            15
+          ]
+        ],
+        "n_occurrences": 3,
+        "mean_duration_s": 1.833,
+        "median_gap_s": 13.0,
+        "occurrences": [
+          {
+            "start_idx": 4,
+            "end_idx": 8,
+            "start_s": 2.0,
+            "duration_s": 2.0
+          },
+          {
+            "start_idx": 20,
+            "end_idx": 24,
+            "start_s": 10.0,
+            "duration_s": 2.0
+          },
+          {
+            "start_idx": 56,
+            "end_idx": 60,
+            "start_s": 28.0,
+            "duration_s": 1.5
+          }
+        ]
+      },
+      "elapsed_s": 0.001
+    },
+    {
+      "name": "Onset matching maximizes valid matches",
+      "source": "tools/verify.py:25",
+      "passed": false,
+      "expected": 2,
+      "observed": 1,
+      "details": {
+        "greedy_pairs": [
+          [
+            2.0,
+            2.4,
+            0.3999999999999999
+          ]
+        ],
+        "valid_two_match_assignment": [
+          [
+            2.0,
+            1.0
+          ],
+          [
+            3.0,
+            2.4
+          ]
+        ]
+      },
+      "elapsed_s": 0.0
+    },
+    {
+      "name": "Standalone profile preserves letterbox transform",
+      "source": "smartreplay/profile.py:137",
+      "passed": false,
+      "expected": true,
+      "observed": false,
+      "details": {
+        "input_crop": [
+          16,
+          12,
+          112,
+          84
+        ],
+        "profile": {
+          "schema": 1,
+          "exe_id": "letterboxed-8a670849",
+          "source": "letterboxed.mp4",
+          "learned_at": {
+            "analysis_size": [
+              32,
+              24
+            ],
+            "native_size": [
+              96,
+              72
+            ],
+            "aspect": 1.3333,
+            "sample_fps": 2,
+            "footage_s": 29.5
+          },
+          "detectors": [
+            {
+              "id": "d0",
+              "label": null,
+              "roi_norm": [
+                0.25,
+                0.25,
+                0.75,
+                0.75
+              ],
+              "templates": [],
+              "min_duration_ms": 1200,
+              "observed": {
+                "n_occurrences": 3,
+                "mean_duration_s": 2.0,
+                "median_gap_s": 9.0,
+                "n_variants": 0,
+                "n_pixels": 192
+              },
+              "onsets_s": [
+                2.0,
+                10.0,
+                20.0
+              ]
+            }
+          ],
+          "ui": {
+            "hud_safe_zones": [
+              [
+                0.1875,
+                0.16667,
+                0.8125,
+                0.83333
+              ]
+            ],
+            "suggested_player_rect": [
+              0.0,
+              0.0,
+              0.1875,
+              1.0
+            ]
+          },
+          "overlay_backend": {
+            "mode": "topmost",
+            "anticheat_class": "unknown"
+          },
+          "telemetry": null
+        },
+        "roi_on_original_128x96_frame": [
+          0.3125,
+          0.3125,
+          0.6875,
+          0.6875
+        ]
+      },
+      "elapsed_s": 0.002
+    },
+    {
+      "name": "Empty profile removes stale template archive",
+      "source": "smartreplay/profile.py:159",
+      "passed": false,
+      "expected": false,
+      "observed": true,
+      "details": "Second profile has zero detectors; the previous template archive remains.",
+      "elapsed_s": 0.004
+    },
+    {
+      "name": "Rejected candidate does not exhaust confirmed-group limit",
+      "source": "smartreplay/grouping.py:167",
+      "passed": false,
+      "expected": 1,
+      "observed": 0,
+      "details": {
+        "default_max_groups_24": [],
+        "control_max_groups_25": [
+          {
+            "gid": 0,
+            "n_pixels": 36,
+            "roi": [
+              1,
+              51,
+              7,
+              57
+            ],
+            "roi_norm": [
+              0.01667,
+              0.85,
+              0.11667,
+              0.95
+            ],
+            "boxes": [
+              [
+                1,
+                51,
+                7,
+                57
+              ]
+            ],
+            "n_occurrences": 3,
+            "mean_duration_s": 2.0,
+            "median_gap_s": 9.5,
+            "occurrences": [
+              {
+                "start_idx": 1060,
+                "end_idx": 1064,
+                "start_s": 530.0,
+                "duration_s": 2.0
+              },
+              {
+                "start_idx": 1078,
+                "end_idx": 1082,
+                "start_s": 539.0,
+                "duration_s": 2.0
+              },
+              {
+                "start_idx": 1098,
+                "end_idx": 1102,
+                "start_s": 549.0,
+                "duration_s": 2.0
+              }
+            ]
+          }
+        ]
+      },
+      "elapsed_s": 0.129
+    },
+    {
+      "name": "Batch files with the same stem keep distinct output folders",
+      "source": "smartreplay/cli.py:44",
+      "passed": false,
+      "expected": 2,
+      "observed": 1,
+      "details": {
+        "index": [
+          {
+            "name": "match",
+            "video": "C:\\Code\\HACKTX\\audit\\results\\same_stem_inputs\\match.avi",
+            "n_frames": 20,
+            "footage_s": 9.5,
+            "event_fraction": 0.0,
+            "groups": [],
+            "timings": {
+              "sample_s": 0.03,
+              "discover_s": 0.01,
+              "group_s": 0.0,
+              "variants_s": 0.0
+            },
+            "out_dir": "C:\\Code\\HACKTX\\audit\\results\\same_stem_out\\match"
+          },
+          {
+            "name": "match",
+            "video": "C:\\Code\\HACKTX\\audit\\results\\same_stem_inputs\\match.mp4",
+            "n_frames": 20,
+            "footage_s": 9.5,
+            "event_fraction": 0.0,
+            "groups": [],
+            "timings": {
+              "sample_s": 0.06,
+              "discover_s": 0.01,
+              "group_s": 0.0,
+              "variants_s": 0.0
+            },
+            "out_dir": "C:\\Code\\HACKTX\\audit\\results\\same_stem_out\\match"
+          }
+        ],
+        "stdout": "\nmatch.avi\n  [sample]   20 frames @ 2.00fps, 64x48, 10s\n  [classify] 0 event px, 0 static px (0.00% of frame)   0.01s\n  [group]    0 event group(s)   0.0s\n  no recurring event HUD found - see notes in README.md\n  [profile]  0 detector(s), 0 hud zone(s), player rect (0.00,0.00)-(1.00,1.00)\n\nmatch.mp4\n  [sample]   20 frames @ 2.00fps, 64x48, 10s\n  [classify] 0 event px, 0 static px (0.00% of frame)   0.01s\n  [group]    0 event group(s)   0.0s\n  no recurring event HUD found - see notes in README.md\n  [profile]  0 detector(s), 0 hud zone(s), player rect (0.00,0.00)-(1.00,1.00)\n\nwrote C:\\Code\\HACKTX\\audit\\results\\same_stem_out\\index.md\n"
+      },
+      "elapsed_s": 0.838
+    },
+    {
+      "name": "Sample reuse rejects a cache from another input video",
+      "source": "smartreplay/cli.py:50",
+      "passed": false,
+      "expected": true,
+      "observed": false,
+      "details": {
+        "requested_source": "C:\\Code\\HACKTX\\audit\\results\\same_stem_inputs\\match.avi",
+        "actual_cached_source": "C:\\Code\\HACKTX\\audit\\results\\same_stem_inputs\\match.mp4",
+        "stdout": "\nmatch.avi\n  [sample]   reusing C:\\Code\\HACKTX\\audit\\results\\same_stem_out\\match\\gray.npy\n  [classify] 0 event px, 0 static px (0.00% of frame)   0.01s\n  [group]    0 event group(s)   0.0s\n  no recurring event HUD found - see notes in README.md\n  [profile]  0 detector(s), 0 hud zone(s), player rect (0.00,0.00)-(1.00,1.00)\n\nwrote C:\\Code\\HACKTX\\audit\\results\\same_stem_out\\index.md\n"
+      },
+      "elapsed_s": 0.634
+    }
+  ]
+}

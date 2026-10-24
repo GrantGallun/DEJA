@@ -1,0 +1,33 @@
+[
+  {
+    "name": "synthetic",
+    "n_frames": 240,
+    "groups": 4,
+    "classification": {
+      "event_pixels": 30664,
+      "static_pixels": 1380,
+      "total_pixels": 82944,
+      "event_fraction": 0.3696952160493827
+    },
+    "elapsed_s": 0.85,
+    "sampling_note": "Existing samples reused; video decoding not re-tested.",
+    "verify_exit_code": 0,
+    "verification": "4 group(s) discovered, 3 truth event(s), tolerance 1.5s\n\nevent     gid  truth  found   tp   prec    rec     f1  roi_iou  mean|dt|\ndeath       0      5      5    5   1.00   1.00   1.00     1.00     0.00s\nkill        1      8      8    8   1.00   1.00   1.00     0.99     0.00s\nround       3      3      4    3   0.75   1.00   0.86     0.07     0.00s\n\npass 3/3 events at f1>=0.8\n1 unmatched group(s) (false positives or genuinely extra elements)\n"
+  },
+  {
+    "name": "doom",
+    "n_frames": 467,
+    "groups": 0,
+    "classification": {
+      "event_pixels": 190383,
+      "static_pixels": 46357,
+      "total_pixels": 307200,
+      "event_fraction": 0.619736328125
+    },
+    "elapsed_s": 5.99,
+    "sampling_note": "Existing samples reused; video decoding not re-tested.",
+    "expected_visible_event_groups": 0,
+    "negative_control_passed": true,
+    "truth_note": "Engine pickup events in doom.truth.json are not visible overlays; not a positive detection test."
+  }
+]

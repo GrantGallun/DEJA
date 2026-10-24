@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Large media and generated results
+footage/*.mp4
+footage/*.mkv
+footage/*.mov
+footage/*.avi
+footage/*.webm
+out/
+*.npy
+*.npz
+
+# Audit scratch (scripts and findings are tracked)
+audit/snapshot/
+audit/results/same_stem_inputs/
+audit/results/same_stem_out/
+
+# Separate repositories and tool output
+experiments/
+_vizdoom.ini

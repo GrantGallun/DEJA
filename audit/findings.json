@@ -1,0 +1,47 @@
+{
+  "scope": "Independent audit of the current HUD-discovery spike, based on the Claude conversation and a snapshot of the production Python sources. No production files were edited.",
+  "highest_priority": [
+    {
+      "priority": "P1",
+      "title": "Negative-control scoring accepts false detections and rejects correct empty output",
+      "files": ["tools/verify.py:69", "tools/verify.py:109"],
+      "reproduction": "Truth events={} and groups=[] returns exit 1. The same truth with a nonempty detected group returns exit 0.",
+      "impact": "The verifier cannot establish the claimed no-event behavior. Separately, direct recomputation confirms that the existing Doom clip currently yields zero groups.",
+      "suggested_fix": "Handle empty truth explicitly: pass exactly when no groups are detected. Retain a positive-event regression test."
+    },
+    {
+      "priority": "P2",
+      "title": "Clip identity collisions overwrite output and permit samples from another input",
+      "files": ["smartreplay/cli.py:44", "smartreplay/cli.py:50"],
+      "reproduction": "Batch match.avi and match.mp4: the two index entries point to one output directory. Discover match.avi with --reuse-samples then loads metadata and arrays from match.mp4.",
+      "impact": "Detections can belong to different footage than the requested video; real-resolution exemplars can also be mixed with the wrong sampled timeline.",
+      "suggested_fix": "Give each input an unambiguous cache identity and validate the source fingerprint and sampling settings before reuse."
+    },
+    {
+      "priority": "P2",
+      "title": "Rejected candidates consume all available group slots",
+      "files": ["smartreplay/grouping.py:167"],
+      "reproduction": "Twenty-four larger, inconsistent-duration candidates precede a smaller valid event. The default limit returns zero confirmed events; changing the limit from 24 to 25 recovers the valid event.",
+      "impact": "Clutter can hide real HUD events even though every earlier candidate is later rejected.",
+      "suggested_fix": "Apply the output-group cap after validation, or keep scanning candidates until the confirmed-group budget or separate work budget is reached."
+    },
+    {
+      "priority": "P2",
+      "title": "Minecraft truth can attribute another player's death or lose deaths after midnight",
+      "files": ["tools/minecraft_truth.py:110", "tools/minecraft_truth.py:133"],
+      "reproduction": "Local player Alex incorrectly includes Alexander's death. A video starting at 00:00:10 with log lines spanning 23:59:50 to 00:00:30 misses the death expected at +20 seconds.",
+      "impact": "The reference labels can be wrong, corrupting recall and precision estimates.",
+      "suggested_fix": "Match the complete player token and anchor the log date consistently when the recording starts after midnight."
+    }
+  ],
+  "other_reproduced_findings": [
+    {"file": "smartreplay/profile.py:137", "finding": "The standalone draft profile omits the letterbox crop transform while storing geometry normalized to the cropped frame."},
+    {"file": "tools/verify.py:25", "finding": "Greedy nearest-onset matching reports one match where a valid assignment has two: truth=[2,3], found=[1,2.4], tolerance=1.1."},
+    {"file": "smartreplay/grouping.py:295", "finding": "An occurrence reaching the final sample is shortened by one sample interval: 2 seconds becomes 1.5 seconds at 2 fps."},
+    {"file": "smartreplay/profile.py:159", "finding": "Writing a new profile with no detectors leaves an older templates.npz archive in the output directory; this is output hygiene rather than a demonstrated runtime failure."}
+  ],
+  "validation_boundary": "Recomputing from the saved sample stacks reproduces synthetic death and kill F1=1.00, round F1=0.86, one unmatched group, and zero Doom groups. This validates those particular results. No positive detection result on real gameplay from multiple games is present; adaptability, live overhead, and overlay behavior remain unproven.",
+  "evidence": ["results/audit.json", "results/recomputed.json"],
+  "reproduction_scripts": ["run_audit.py", "recheck_discovery.py"],
+  "parallel_work_split": "Claude can continue the production implementation while this audit directory holds isolated validation fixtures and regression checks. Production fixes should be coordinated to avoid concurrent edits."
+}
