@@ -37,6 +37,7 @@ class GroupParams:
     adjacency_px: int = 3        # gap still counted as spatially adjacent
     close_gaps: int = 1          # samples of dropout bridged in an activation
     vote: float = 0.5            # fraction of member pixels on => group is on
+    explain: list | None = None  # if a list, every rejected candidate is logged into it
 
 
 @dataclass
@@ -191,20 +192,42 @@ def group_events(
         # Seeding from the largest remaining blob, with a majority vote across
         # it, is far more robust than seeding from one pixel: HUD elements are
         # big and contiguous, while spurious candidates are scattered.
-        seed_cols = idx_map[lab == comp]
+        blob = lab == comp
+        seed_cols = idx_map[blob]
         seed_cols = seed_cols[seed_cols >= 0]
-        activation = _close1d(series[:, seed_cols].mean(axis=1) >= p.vote, p.close_gaps)
-        if not activation.any():
-            remaining_mask[lab == comp] = False
-            continue
-
         pool = idx_map[remaining_mask]
         pool = pool[pool >= 0]
-        sim = _jaccard_vs(series[:, pool], activation)
-        members = pool[sim >= p.jaccard]
+        members = np.empty(0, dtype=np.int32)
+        activation = _close1d(series[:, seed_cols].mean(axis=1) >= p.vote, p.close_gaps)
+        if activation.any():
+            members = pool[_jaccard_vs(series[:, pool], activation) >= p.jaccard]
+
+        # On real footage one blob can hold several elements side by side
+        # (a death banner touching a chat line touching a hotbar), and the
+        # blob-wide vote is then a timeline none of them has. Fall back to
+        # the blob's medoid: the pixel whose timeline the most other blob
+        # pixels share, which is a seed from the blob's largest coherent part.
         if members.size < min_px:
-            remaining_mask[lab == comp] = False
-            continue
+            rng = np.random.default_rng(len(raw))
+            sample = seed_cols if seed_cols.size <= 256 else rng.choice(seed_cols, 256, replace=False)
+            a = series[:, sample].astype(np.float32)
+            inter = a.T @ a
+            n = a.sum(axis=0)
+            jac = inter / np.maximum(n[:, None] + n[None, :] - inter, 1.0)
+            support = (jac >= p.jaccard).sum(axis=1)
+            med = int(np.argmax(support))
+            agree = sample[jac[med] >= p.jaccard]
+            activation = _close1d(series[:, agree].mean(axis=1) >= p.vote, p.close_gaps)
+            if activation.any():
+                members = pool[_jaccard_vs(series[:, pool], activation) >= p.jaccard]
+            if members.size < min_px:
+                # Nothing coherent here at all: drop what the medoid matched,
+                # or the whole blob if even that is empty, and move on.
+                drop = members if members.size else seed_cols
+                remaining_mask[ys[drop], xs[drop]] = False
+                if not members.size:
+                    remaining_mask[blob] = False
+                continue
 
         # Re-vote over the full membership, which may reach beyond the seed
         # blob (a kill feed has several disjoint rows sharing one timeline).
@@ -272,13 +295,20 @@ def group_events(
         if not joined:
             break
 
+    def reject(reason: str, members: np.ndarray, spans: list, **extra) -> None:
+        if p.explain is not None:
+            p.explain.append({"reason": reason, "bbox": _bbox(ys, xs, members),
+                              "n_pixels": int(members.size), "n_spans": len(spans), **extra})
+
     groups: list[EventGroup] = []
     for members, activation in merged:
         spans = [(s, e) for s, e in _runs(activation) if (e - s) >= min_run]
         if len(spans) < p.min_occurrences:
+            reject("too few occurrences", members, spans)
             continue
 
         if members.size < min_px:
+            reject("too small", members, spans)
             continue
 
         # Members were admitted at the membership threshold; requiring the
@@ -287,6 +317,7 @@ def group_events(
         # passed the bar.
         coherence = float(_jaccard_vs(series[:, members], activation).mean())
         if coherence < p.min_coherence:
+            reject("incoherent", members, spans, coherence=round(coherence, 3))
             continue
 
         mask = np.zeros((h, w), dtype=bool)
@@ -303,11 +334,14 @@ def group_events(
         # coincidentally-correlated world pixels does not.
         bbox_area = max(1, (x1 - x0) * (y1 - y0))
         if members.size / bbox_area < p.min_fill:
+            reject("sparse", members, spans, fill=round(members.size / bbox_area, 3))
             continue
 
         # And it lasts about the same length of time every time it appears.
         durs = np.array([_span_duration(times, s, e, dt) for s, e in spans])
         if durs.mean() > 0 and durs.std() / durs.mean() > p.max_duration_cv:
+            reject("inconsistent duration", members, spans,
+                   duration_cv=round(float(durs.std() / durs.mean()), 3))
             continue
 
         occ = [
@@ -352,3 +386,66 @@ def save(groups: list[EventGroup], out_dir: str | Path) -> None:
     (out_dir / "events.json").write_text(
         json.dumps([g.to_dict() for g in groups], indent=2), encoding="utf-8"
     )
+
+
+def appearance_consistency(group: EventGroup, gray: np.ndarray, color: np.ndarray) -> tuple[float, float, float]:
+    """(colour spread, structural agreement, texture) of a group across its occurrences.
+
+    Colour spread is the median Lab distance of each occurrence's mean colour
+    from the median colour; structural agreement is the median correlation of
+    the grey ROI between occurrences; texture is the median grey std inside
+    the ROI. An interface element looks the same
+    every time it appears - same colour, same shape - while a patch of world
+    that happened to share a timeline shows whatever was there: sky blue one
+    time, lava orange the next. Grey-level discovery cannot tell those apart
+    (blue and orange can have the same luminance); this can.
+    """
+    import cv2
+
+    t, h, w = gray.shape
+    ch, cw = color.shape[1:3]
+    x0, y0, x1, y1 = group.roi
+    cx0, cx1 = int(x0 * cw / w), max(int(x0 * cw / w) + 1, int(round(x1 * cw / w)))
+    cy0, cy1 = int(y0 * ch / h), max(int(y0 * ch / h) + 1, int(round(y1 * ch / h)))
+    mids = [min(t - 1, (o.start_idx + o.end_idx - 1) // 2) for o in group.occurrences]
+    labs = []
+    for m in mids:
+        patch = np.ascontiguousarray(color[m, cy0:cy1, cx0:cx1])
+        labs.append(cv2.cvtColor(patch, cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(np.float32).mean(0))
+    labs = np.array(labs)
+    spread = float(np.median(np.linalg.norm(labs - np.median(labs, axis=0), axis=1)))
+
+    pts = np.array([gray[m, y0:y1, x0:x1].astype(np.float32).ravel() for m in mids])
+    texture = float(np.median(pts.std(axis=1)))
+    pts = (pts - pts.mean(1, keepdims=True)) / np.maximum(pts.std(1, keepdims=True), 1e-3)
+    corr = pts @ pts.T / max(pts.shape[1], 1)
+    agree = float(np.median(np.median(corr, axis=1)))
+    return spread, agree, texture
+
+
+def filter_by_appearance(groups: list[EventGroup], gray: np.ndarray, color: np.ndarray,
+                         max_spread: float = 3.5, min_agree: float = 0.5,
+                         max_flat_texture: float = 4.0,
+                         explain: list | None = None) -> list[EventGroup]:
+    """Keep groups whose occurrences share a shape, or are one flat colour.
+
+    Shape agreement is the strong test. An element with no shape to agree on
+    (a plain bar, a translucent chat strip) passes only if it is genuinely
+    flat and the same colour every time; a dark patch of sky that walls
+    sometimes cut into is neither.
+    """
+    kept = []
+    for g in groups:
+        spread, agree, texture = appearance_consistency(g, gray, color)
+        flat_and_steady = spread <= max_spread and texture <= max_flat_texture
+        if agree < min_agree and not flat_and_steady:
+            if explain is not None:
+                explain.append({"reason": "inconsistent appearance", "bbox": g.roi,
+                                "n_pixels": g.n_pixels, "n_spans": len(g.occurrences),
+                                "colour_spread": round(spread, 2), "agreement": round(agree, 3),
+                                "texture": round(texture, 2)})
+            continue
+        kept.append(g)
+    for i, g in enumerate(kept):
+        g.gid = i
+    return kept

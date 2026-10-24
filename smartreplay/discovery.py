@@ -46,6 +46,9 @@ class DiscoveryParams:
     spatial_vote: float = 0.60     # fraction of it that must agree
     close_gaps: int = 0            # bridging dropouts here rescues noise too;
     #                              the group activation is the safe place for it
+    n_candidates: int = 3          # histogram peaks per pixel tested as the event state
+    max_run_cv: float = 1.0        # run lengths of an event state are consistent
+    structure: bool = True         # also run the recurring-pattern channel (structure.py)
 
 
 @dataclass
@@ -118,68 +121,210 @@ def _drop_small_components(mask: np.ndarray, min_px: int) -> np.ndarray:
     return keep[lab]
 
 
+def _on_series(gray: np.ndarray, mode_val: np.ndarray, tol: int, k: int, vote: float,
+               chunk: int = 128) -> np.ndarray:
+    """Per-frame "at the candidate value" mask with spatial consensus, (T, H*W).
+
+    Computed in time chunks so no full-length int16 or float copy of the
+    stack is ever held - on half an hour of footage those alone run to
+    gigabytes.
+    """
+    t, h, w = gray.shape
+    mv = mode_val.reshape(h, w).astype(np.int16)
+    out = np.empty((t, h * w), dtype=bool)
+    for s in range(0, t, chunk):
+        e = min(s + chunk, t)
+        block = np.abs(gray[s:e].astype(np.int16) - mv[None]) <= tol
+        if k > 1:
+            f = block.astype(np.float32)
+            uniform_filter(f, size=(1, k, k), output=f, mode="nearest")
+            block = f >= vote
+        out[s:e] = block.reshape(e - s, h * w)
+    return out
+
+
+def _run_stats(on: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """(n_runs, mean_run, p_on, run_cv) per column of a (T, P) bool array.
+
+    run_cv is the coefficient of variation of the run lengths. An event
+    overlay holds for about the same time on every appearance; a patch of
+    world that merely passes through the same value does so for wildly
+    varying spans.
+    """
+    t, p = on.shape
+    cur = np.zeros(p, dtype=np.int32)
+    s1 = np.zeros(p, dtype=np.float64)
+    s2 = np.zeros(p, dtype=np.float64)
+    n_runs = np.zeros(p, dtype=np.int32)
+    for i in range(t):
+        o = on[i]
+        ended = (cur > 0) & ~o
+        if ended.any():
+            c = cur[ended].astype(np.float64)
+            s1[ended] += c
+            s2[ended] += c * c
+            n_runs[ended] += 1
+        cur = np.where(o, cur + 1, 0)
+    ended = cur > 0
+    c = cur[ended].astype(np.float64)
+    s1[ended] += c
+    s2[ended] += c * c
+    n_runs[ended] += 1
+    n = np.maximum(n_runs, 1)
+    mean_run = s1 / n
+    var = np.maximum(s2 / n - mean_run ** 2, 0.0)
+    cv = np.where(mean_run > 0, np.sqrt(var) / np.maximum(mean_run, 1e-6), 0.0)
+    p_on = s1 / float(t)
+    return n_runs, mean_run.astype(np.float32), p_on.astype(np.float32), cv.astype(np.float32)
+
+
+def _std(flat: np.ndarray, chunk: int = 16384) -> np.ndarray:
+    """Per-pixel std without a float64 copy of the whole stack."""
+    out = np.empty(flat.shape[1], dtype=np.float32)
+    for s in range(0, flat.shape[1], chunk):
+        out[s:s + chunk] = flat[:, s:s + chunk].astype(np.float32).std(axis=0)
+    return out
+
+
+def _candidate_bins(prom: np.ndarray, n: int, min_count: float, sep: int = 2) -> np.ndarray:
+    """Up to n most prominent histogram peaks per pixel, (n, P); -1 = none.
+
+    One peak per pixel is not enough. A pixel shows world most of the time,
+    and in a dark game the world's own dominant value - black - is the
+    tallest spike, so the event element's value (a grey button on a death
+    screen) is only the second or third peak. Each candidate is tested as a
+    possible event state and the best one kept.
+    """
+    work = prom.astype(np.float32).copy()
+    nb, p = work.shape
+    cols = np.arange(p)
+    out = np.full((n, p), -1, dtype=np.int32)
+    for i in range(n):
+        b = np.argmax(work, axis=0)
+        ok = work[b, cols] >= min_count
+        out[i, ok] = b[ok]
+        lo, hi = np.maximum(b - sep, 0), np.minimum(b + sep, nb - 1)
+        for d in range(-sep, sep + 1):
+            idx = np.clip(b + d, lo, hi)
+            work[idx, cols] = -np.inf
+    return out
+
+
 def discover(gray: np.ndarray, sample_fps: float, params: DiscoveryParams | None = None) -> DiscoveryResult:
     p = params or DiscoveryParams()
     t, h, w = gray.shape
-    flat = gray.reshape(t, h * w)
+    P = h * w
+    flat = gray.reshape(t, P)
+    cols = np.arange(P)
 
     hist = _pixel_histograms(gray)
     base = uniform_filter1d(hist.astype(np.float32), size=9, axis=0, mode="nearest")
     prom = hist - base
-    mode_bin = np.argmax(prom, axis=0)
-    prominence = (prom[mode_bin, np.arange(h * w)] / float(t)).astype(np.float32)
-    mode_val = (mode_bin * BIN_W + BIN_W // 2).astype(np.uint8)
-
-    on = np.abs(flat.astype(np.int16) - mode_val[None, :].astype(np.int16)) <= p.tol
-
-    # Spatial consensus, and the single most important step here. A pixel
-    # sitting at its mode value proves nothing on its own: a dark HUD panel and
-    # a dark patch of scenery look identical by value. What separates them is
-    # that an interface element takes its colour across a whole contiguous
-    # region simultaneously, while world content never agrees with itself at
-    # that scale. Requiring the neighbourhood to agree removes nearly all of
-    # the spurious activations that value alone admits.
-    on = _spatial_consensus(on.reshape(t, h, w), p.spatial_k, p.spatial_vote).reshape(t, h * w)
-
-    # Bridging dropouts per pixel is tempting but counter-productive: random
-    # world pixels have many one-sample gaps, so closing merges their scattered
-    # hits into runs long enough to pass the event test. Left off by default;
-    # grouping closes the consensus activation instead, where it is safe.
-    if p.close_gaps > 0:
-        on = binary_closing(on, structure=np.ones((2 * p.close_gaps + 1, 1), dtype=bool))
-
-    n_on = on.sum(axis=0).astype(np.int32)
-    rising = on[1:] & ~on[:-1]
-    n_runs = (rising.sum(axis=0) + on[0].astype(np.int32)).astype(np.int32)
-    mean_run = (n_on / np.maximum(n_runs, 1)).astype(np.float32)
-    p_on = (n_on / float(t)).astype(np.float32)
-    std = flat.std(axis=0).astype(np.float32)
+    std = _std(flat)
 
     min_run = max(2.0, p.min_event_s * sample_fps)
     max_run = p.max_event_s * sample_fps
+    cands = _candidate_bins(prom, max(1, p.n_candidates), p.min_prominence * t)
 
-    event = (
-        (n_runs >= p.min_occurrences)
-        & (mean_run >= min_run)
-        & (mean_run <= max_run)
-        & (p_on >= p.p_on_lo)
-        & (p_on <= p.p_on_hi)
-        & (std >= p.min_std)
-        & (prominence >= p.min_prominence)
-    )
-    static = (p_on >= p.static_p) & (std <= p.static_std)
+    # The most prominent value doubles as the always-on HUD test.
+    top = np.where(cands[0] >= 0, cands[0], np.argmax(prom, axis=0))
+    mode_val = (top * BIN_W + BIN_W // 2).astype(np.uint8)
+    prominence = (prom[top, cols] / float(t)).astype(np.float32)
+
+    best_score = np.full(P, -1.0, dtype=np.float32)
+    on = np.zeros((t, P), dtype=bool)
+    sel_mode = mode_val.copy()
+    sel_prom = prominence.copy()
+    n_runs = np.zeros(P, np.int32)
+    mean_run = np.zeros(P, np.float32)
+    p_on = np.zeros(P, np.float32)
+    static = np.zeros(P, dtype=bool)
+
+    for i in range(cands.shape[0]):
+        b = cands[i]
+        valid = b >= 0
+        if not valid.any():
+            break
+        bi = np.where(valid, b, 0)
+        mv = (bi * BIN_W + BIN_W // 2).astype(np.uint8)
+        pr = np.where(valid, prom[bi, cols] / float(t), 0.0).astype(np.float32)
+        # Spatial consensus, and the single most important step here. A pixel
+        # sitting at a value proves nothing on its own: a dark HUD panel and
+        # a dark patch of scenery look identical by value. What separates them
+        # is that an interface element takes its colour across a whole
+        # contiguous region simultaneously, while world content never agrees
+        # with itself at that scale.
+        on_i = _on_series(gray, mv, p.tol, p.spatial_k, p.spatial_vote)
+        if p.close_gaps > 0:
+            on_i = binary_closing(on_i, structure=np.ones((2 * p.close_gaps + 1, 1), dtype=bool))
+        nr, mr, po, cv = _run_stats(on_i)
+        if i == 0:
+            static = valid & (po >= p.static_p) & (std <= p.static_std)
+            # Pixels with no event candidate still report their top value.
+            n_runs, mean_run, p_on = nr, mr, po
+        passes = (
+            valid
+            & (nr >= p.min_occurrences)
+            & (mr >= min_run)
+            & (mr <= max_run)
+            & (po >= p.p_on_lo)
+            & (po <= p.p_on_hi)
+            & (std >= p.min_std)
+            & (pr >= p.min_prominence)
+            & (cv <= p.max_run_cv)
+        )
+        # Among passing candidates prefer the most consistent run lengths:
+        # the element's real "on" state holds for the same time on every
+        # appearance, while a value the world merely passes through (black,
+        # in a dark game) comes and goes irregularly - and is often the more
+        # prominent of the two.
+        score = (1.0 / (1.0 + cv)).astype(np.float32)
+        better = passes & (score > best_score)
+        if better.any():
+            best_score[better] = score[better]
+            on[:, better] = on_i[:, better]
+            sel_mode[better] = mv[better]
+            sel_prom[better] = pr[better]
+            n_runs[better], mean_run[better], p_on[better] = nr[better], mr[better], po[better]
+        del on_i
+
+    event = best_score >= 0
+    # Pixels without an event candidate keep their top-value activation, so
+    # downstream code still sees the static HUD and a full "on" stack.
+    if (~event).any() and cands.shape[0]:
+        rest = ~event
+        on_top = _on_series(gray, mode_val, p.tol, p.spatial_k, p.spatial_vote)
+        on[:, rest] = on_top[:, rest]
+        del on_top
+    sel_mode[~event] = mode_val[~event]
+    sel_prom[~event] = prominence[~event]
+
+    # The structure channel catches elements whose value the world shares
+    # (see structure.py). Where both channels fire, the pixel channel's
+    # finer-grained activation is kept.
+    if p.structure:
+        from .structure import StructureParams, discover_structure
+
+        s_event, s_on = discover_structure(gray, sample_fps, StructureParams(
+            min_occurrences=p.min_occurrences, min_event_s=p.min_event_s,
+            max_event_s=p.max_event_s))
+        add = s_event.reshape(-1) & ~event
+        if add.any():
+            on[:, add] = s_on.reshape(t, P)[:, add]
+            event = event | add
+        del s_on
 
     shape = (h, w)
     # Interface is contiguous; scattered single pixels that happen to pass the
     # temporal test are noise, and dropping them here keeps grouping tractable.
     event = _drop_small_components(event.reshape(shape), p.min_component_px).reshape(-1)
     return DiscoveryResult(
-        mode_val=mode_val.reshape(shape),
+        mode_val=sel_mode.reshape(shape),
         p_on=p_on.reshape(shape),
         n_runs=n_runs.reshape(shape),
         mean_run=mean_run.reshape(shape),
         std=std.reshape(shape),
-        prominence=prominence.reshape(shape),
+        prominence=sel_prom.reshape(shape),
         event_mask=event.reshape(shape),
         static_mask=static.reshape(shape),
         on=on.reshape(t, h, w),

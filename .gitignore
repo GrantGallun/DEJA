@@ -21,3 +21,6 @@ audit/results/same_stem_out/
 # Separate repositories and tool output
 experiments/
 _vizdoom.ini
+footage/**/*.mp4
+footage/**/*.part
+footage/**/*.ocr.jsonl

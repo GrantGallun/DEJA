@@ -117,6 +117,10 @@ def run_one(video: Path, out_root: Path, args) -> dict:
             max_groups=args.max_groups,
         ),
     )
+    rejected: list[dict] = []
+    groups = grouping.filter_by_appearance(groups, gray, color, explain=rejected)
+    if rejected:
+        print(f"  [group]    dropped {len(rejected)} group(s) whose occurrences look different each time")
     grouping.save(groups, out_dir)
     timings["group_s"] = round(time.perf_counter() - t0, 2)
     print(f"  [group]    {len(groups)} event group(s)   {timings['group_s']}s")
