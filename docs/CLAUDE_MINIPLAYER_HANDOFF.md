@@ -28,7 +28,8 @@ All paths below are in the isolated GameHQ checkout.
 | File | Responsibility |
 |---|---|
 | [PassiveReplay.cpp](C:/Code/HACKTX/experiments/gamehq-passive/spike/passive-replay/PassiveReplay.cpp) | `ReplayController`, separate visibility/focus actions, request IDs, review ownership, temporary-media lifetime, fixed playback bounds, logging, and experiment startup. |
-| [ReplayWindow.qml](C:/Code/HACKTX/experiments/gamehq-passive/spike/passive-replay/ReplayWindow.qml) | Actual Qt Multimedia player and controls. Waits for loaded metadata, seeks to the selected start before playing, and presents a timeline relative to the selected interval. |
+| [ReplayMediaSession.h](C:/Code/HACKTX/experiments/gamehq-passive/spike/passive-replay/ReplayMediaSession.h) and [ReplayMediaSession.cpp](C:/Code/HACKTX/experiments/gamehq-passive/spike/passive-replay/ReplayMediaSession.cpp) | Per-replay `QMediaPlayer`/audio output: created on open, retired with a deferred delete on close, then `disposed(source)` reports that the backend released that file. Speed and volume persist across replays. |
+| [ReplayWindow.qml](C:/Code/HACKTX/experiments/gamehq-passive/spike/passive-replay/ReplayWindow.qml) | Qt Multimedia view and controls. Waits for loaded metadata, seeks to the selected start before playing, and presents a timeline relative to the selected interval. |
 | [FramePumpService.h](C:/Code/HACKTX/experiments/gamehq-passive/src/capture/FramePumpService.h) and [FramePumpService.cpp](C:/Code/HACKTX/experiments/gamehq-passive/src/capture/FramePumpService.cpp) | `requestTemporaryReplay(requestId, seconds)`, ready/failure signals, background remux, `setReviewActive`, target-loss handling, and frame-progress reporting. |
 | [SegmentRecorder.h](C:/Code/HACKTX/experiments/gamehq-passive/src/capture/SegmentRecorder.h) and [SegmentRecorder.cpp](C:/Code/HACKTX/experiments/gamehq-passive/src/capture/SegmentRecorder.cpp) | `snapshotForSave(requestedSeconds = 0)` finalizes the current segment and immediately reopens recording. Retains/selects segments by recorded duration and probes restored segment durations on re-arm. |
 | [ReplayBufferOwners.h](C:/Code/HACKTX/experiments/gamehq-passive/src/capture/ReplayBufferOwners.h) | Adds a Review owner so foreground changes to the player do not disarm capture or retarget it to another window. Also blocks HDR operations from retargeting that session. |
@@ -49,7 +50,7 @@ show request
   -> ReplayExportTask remuxes compressed samples into a private MP4
   -> accept result only if requestId still matches the visible review
   -> load metadata, select [max(0, duration - 30000), duration], seek, play
-  -> close at fixed endpoint, clear source, release media after decoder unload
+  -> close at fixed endpoint, retire per-replay player, release media on disposed(source)
   -> release Review owner; ordinary capture ownership continues independently
 ```
 
@@ -83,27 +84,30 @@ If work instead continues inside the GameHQ product, extract the controller from
 
 ## Verification and remaining work
 
-Last verified integration run on 2026-10-24:
+Last verified integration run on 2026-10-24 (17:41–17:44, after the decoder-teardown change):
 
-- Standalone `out-passive\GameHQPassiveReplay.exe` and full `out-full\GameHQ.exe` built successfully.
-- Four CTest suites passed: `temporary_replay`, `replay_owners`, `recorder_snapshots`, and `live_replay` (18.70 seconds total). Encoder tests use generated D3D WARP textures, not screen capture.
+- Standalone `out-passive\GameHQPassiveReplay.exe` and full `out-full\GameHQ.exe` rebuilt from the current tree.
+- All five CTest suites passed: `temporary_replay`, `replay_owners`, `recorder_snapshots`, `live_replay`, and `replay_media` (39.73 seconds total). Encoder tests use generated D3D WARP textures, not screen capture.
+- `replay_media` covers the new [ReplayMediaSession](C:/Code/HACKTX/experiments/gamehq-passive/spike/passive-replay/ReplayMediaSession.cpp): the player and audio output are destroyed on close; repeated close/reopen releases only that replay's file and keeps speed/volume; closing from a playback signal is safe; closing after a load error still releases the backend.
 - The continued-recording test keeps an MP4 reader open while the recording ring advances and rotates; the snapshot size/duration stay fixed and it remains readable.
 - The repeated-open regression failed with 7000 ms before the fix and passed with 30000 ms after it, including restoration after re-arm.
 - Dry-run launch checks covered default live mode, explicit file paths containing spaces, and full-app routing. QML lint exited successfully with context-property warnings.
 - A read-only follow-up review found the duration-retention issue resolved.
 
-Evidence is in [LastTest.log](C:/Code/HACKTX/experiments/gamehq-passive/out-passive/Testing/Temporary/LastTest.log), [retention-red.txt](C:/Code/HACKTX/experiments/gamehq-passive/out-passive/retention-red.txt), and [retention-green.txt](C:/Code/HACKTX/experiments/gamehq-passive/out-passive/retention-green.txt). These are local build artifacts, not committed evidence.
+Evidence is in [out-passive-verify.log](C:/Code/HACKTX/experiments/gamehq-passive/out-passive-verify.log) (UTF-16), [LastTest.log](C:/Code/HACKTX/experiments/gamehq-passive/out-passive/Testing/Temporary/LastTest.log), [retention-red.txt](C:/Code/HACKTX/experiments/gamehq-passive/out-passive/retention-red.txt), and [retention-green.txt](C:/Code/HACKTX/experiments/gamehq-passive/out-passive/retention-green.txt). These are local build artifacts, not committed evidence.
 
-**Newer parallel work needs reconciliation:** a fifth target, `replay_media`, and [tst_replaymedia.cpp](C:/Code/HACKTX/experiments/gamehq-passive/spike/passive-replay/tst_replaymedia.cpp) were added after that verified run. The test uses offscreen generated media and expects the player/audio objects to be destroyed on close. The inspected QML still has a persistent `MediaPlayer` and stops it on close. Reconcile decoder teardown and that test before claiming the current five-suite tree passes. No new builds or tests were run for this documentation handoff.
+**Decoder teardown is reconciled.** [ReplayWindow.qml](C:/Code/HACKTX/experiments/gamehq-passive/spike/passive-replay/ReplayWindow.qml) no longer keeps a persistent `MediaPlayer`; `ReplayMediaSession` creates the player and audio output per replay and retires them with a deferred delete, so closing from inside a playback or end-of-media signal is safe. Its `disposed(source)` signal calls `ReplayController::mediaReleased`, which is the point where the temporary MP4 may be released. Both builds compile the class.
 
-Safe commands for the four previously verified suites and command-generation checks:
+Build note: on Windows, a broken `HKCU\Software\Microsoft\Command Processor\Autorun` value makes every `cmd /C` exit 1 silently, and Ninja's automoc steps then fail with no message. If builds stop at "Automatic MOC" without an error, check that value first. A failed build leaves old test binaries in place, so ctest can report stale passes; confirm binary timestamps.
+
+Safe commands for the five suites and command-generation checks (also wrapped in `experiments\verify-miniplayer-offline.ps1`, which is git-ignored):
 
 ```powershell
 $replayRoot = 'C:\Code\HACKTX\experiments\gamehq-passive'
 & "$replayRoot\spike\passive-replay\build.ps1"
 & "$replayRoot\spike\passive-replay\build.ps1" -FullApp
 $env:PATH = "$replayRoot\tools\Qt\Tools\mingw1310_64\bin;$replayRoot\tools\Qt\6.8.3\mingw_64\bin;$env:PATH"
-& "$replayRoot\.tooling\python\cmake\data\bin\ctest.exe" --test-dir "$replayRoot\out-passive" -R '^(temporary_replay|replay_owners|recorder_snapshots|live_replay)$' --output-on-failure
+& "$replayRoot\.tooling\python\cmake\data\bin\ctest.exe" --test-dir "$replayRoot\out-passive" -R '^(temporary_replay|replay_owners|recorder_snapshots|live_replay|replay_media)$' --output-on-failure
 & "$replayRoot\spike\passive-replay\launch.ps1" -PrintCommand
 & "$replayRoot\spike\passive-replay\launch.ps1" -FullApp -PrintCommand
 ```
