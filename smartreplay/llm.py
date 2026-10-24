@@ -43,6 +43,8 @@ PLAN_TOOL = {
                                       "death, kill, round_end, round_start, item_pickup, level_up, ..."},
             "filters": {
                 "type": "array",
+                "description": "ALL filters must hold (AND). Alternatives (fire OR lava) go in ONE "
+                               "filter's fact_values and text_terms, never in separate filters.",
                 "items": {
                     "type": "object",
                     "properties": {
@@ -57,15 +59,28 @@ PLAN_TOOL = {
                                                       "banners). Empty if the game shows no text for it."},
                         "visual": {"type": "boolean",
                                    "description": "Whether the filter can be seen in the frame without text."},
+                        "fact_key": {"type": ["string", "null"],
+                                     "enum": ["cause", "enemy", "weapon", "item", "place", "outcome", None],
+                                     "description": "Which recorded fact of a moment decides this filter "
+                                                    "(e.g. cause for 'burned to death'), or null."},
+                        "fact_values": {"type": "array", "items": {"type": "string"},
+                                        "description": "Values of that fact that satisfy the filter. Copy "
+                                                       "them from the recorded values listed in the prompt "
+                                                       "when possible; '<any>' means any recorded value."},
+                        "null_is_no": {"type": "boolean",
+                                       "description": "true if a moment with no value for fact_key fails "
+                                                      "the filter (no enemy recorded = not killed by a mob)."},
                     },
-                    "required": ["concept", "description", "include", "text_terms", "visual"],
+                    "required": ["concept", "description", "include", "text_terms", "visual",
+                                 "fact_key", "fact_values", "null_is_no"],
                 },
             },
             "anchor_text_terms": {"type": "array", "items": {"type": "string"},
-                                  "description": "Phrases this game prints for the anchor in general, "
+                                  "description": "Case-specific phrases this game prints for the anchor, "
                                                  "covering all its variants (for a death: every death-"
-                                                 "message form). Lets code tell 'a different cause was "
-                                                 "read' apart from 'nothing was read'."},
+                                                 "message form, e.g. 'drowned', 'was slain by'), not "
+                                                 "generic words like 'died'. Lets code tell 'a different "
+                                                 "case was read' apart from 'nothing was read'."},
             "before_s": {"type": "number", "description": "seconds to include before each moment"},
             "after_s": {"type": "number", "description": "seconds to include after each moment"},
             "limit": {"type": ["integer", "null"], "description": "only the most recent N, or null"},
@@ -90,10 +105,16 @@ LABEL_TOOL = {
                     "properties": {
                         "group": {"type": "integer"},
                         "concept": {"type": "string", "description": "snake_case event concept, or 'unknown'"},
+                        "role": {"type": "string", "enum": ["event", "feed", "state", "menu", "other"],
+                                 "description": "event: each appearance is one moment of one kind "
+                                                "(death screen, round banner). feed: a place where "
+                                                "messages of many kinds appear (chat, kill feed). "
+                                                "state: an ongoing condition (boss bar, spectating). "
+                                                "menu: a menu or pause screen."},
                         "confidence": {"type": "number"},
                         "why": {"type": "string"},
                     },
-                    "required": ["group", "concept", "confidence", "why"],
+                    "required": ["group", "concept", "role", "confidence", "why"],
                 },
             }
         },
@@ -111,14 +132,58 @@ CHECK_TOOL = {
             "box": {"type": ["array", "null"], "items": {"type": "number"},
                     "description": "[x0, y0, x1, y1] in 0..1 of the evidence in the first image, or null"},
             "why": {"type": "string"},
+            "evidence_text": {"type": ["string", "null"],
+                              "description": "The on-screen phrase your answer rests on, minus player "
+                                             "names (e.g. 'was shot by arrow'), or null if none."},
         },
-        "required": ["answer", "box", "why"],
+        "required": ["answer", "box", "why", "evidence_text"],
     },
 }
 
 
+FACT_KEYS = ["cause", "enemy", "weapon", "item", "place", "outcome"]
+
+DESCRIBE_TOOL = {
+    "name": "moment_facts",
+    "description": "What happened at one moment of gameplay, for later search.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "what_happened": {"type": "string", "description": "One sentence."},
+            "on_screen_text": {"type": "array", "items": {"type": "string"},
+                               "description": "Every message, banner or kill-feed line about this "
+                                              "moment, verbatim (fix obvious misreads)."},
+            "facts": {
+                "type": "object",
+                "description": "Short lowercase values; null when not shown or not applicable.",
+                "properties": {
+                    "cause": {"type": ["string", "null"], "description": "what caused it, e.g. fire, "
+                              "lava, fall, void, arrow, explosion, drowning, melee"},
+                    "enemy": {"type": ["string", "null"], "description": "who or what did it"},
+                    "weapon": {"type": ["string", "null"]},
+                    "item": {"type": ["string", "null"], "description": "item gained or used"},
+                    "place": {"type": ["string", "null"]},
+                    "outcome": {"type": ["string", "null"], "description": "e.g. death, kill, win, loss"},
+                },
+                "required": FACT_KEYS,
+            },
+        },
+        "required": ["what_happened", "on_screen_text", "facts"],
+    },
+}
+
+
+def plan_tool(catalog: list[str]) -> dict:
+    """The plan schema, with the anchor constrained to this recording's names."""
+    tool = json.loads(json.dumps(PLAN_TOOL))
+    names = [c.split(" (")[0] for c in catalog]
+    if names:
+        tool["input_schema"]["properties"]["anchor"]["enum"] = sorted(set(names)) + ["none"]
+    return tool
+
+
 class LLM(Protocol):
-    def plan(self, query: str, game: str, catalog: list[str]) -> dict: ...
+    def plan(self, query: str, game: str, catalog: list[str], facts: str = "") -> dict: ...
     def label_groups(self, game: str, groups: list[dict]) -> dict: ...
     def check(self, images: list[np.ndarray], question: str) -> dict: ...
 
@@ -139,16 +204,18 @@ class ClaudeLLM:
         import anthropic  # pip install anthropic
 
         self.client = anthropic.Anthropic()
+        self.live_calls = 0
         self.model = model
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def _call(self, tool: dict, content: list[dict], max_tokens: int = 1500) -> dict:
-        key = hashlib.sha256(json.dumps([self.model, tool["name"], content], sort_keys=True)
+        key = hashlib.sha256(json.dumps([self.model, tool, content], sort_keys=True)
                              .encode()).hexdigest()
         path = self.cache_dir / f"{key}.json"
         if path.exists():
             return json.loads(path.read_text(encoding="utf-8"))
+        self.live_calls += 1
         msg = self.client.messages.create(
             model=self.model, max_tokens=max_tokens, tools=[tool],
             tool_choice={"type": "tool", "name": tool["name"]},
@@ -158,13 +225,24 @@ class ClaudeLLM:
         path.write_text(json.dumps(out), encoding="utf-8")
         return out
 
-    def plan(self, query: str, game: str, catalog: list[str]) -> dict:
+    def plan(self, query: str, game: str, catalog: list[str], facts: str = "") -> dict:
+        """catalog: "concept (role)" strings; the anchor is constrained to them.
+        facts: the values actually recorded at this recording's moments."""
+        tool = plan_tool(catalog)
         text = (f"Game: {game}\nPlayer request: {query!r}\n"
-                f"Event concepts this recording already has detectors for: {catalog or 'none yet'}.\n"
-                "Prefer one of those as the anchor when it fits. Turn the request into a request_spec. "
+                f"HUD elements found in this recording, with their role: {catalog or 'none yet'}.\n"
+                "Pick the anchor from those names: prefer an 'event' whose every appearance is the "
+                "kind of moment asked for (a death screen for deaths); use a 'feed' only when no event "
+                "fits; 'none' if nothing does. Text anywhere on screen near the moment is read "
+                "anyway, so the anchor does not need to be where the text appears. Default window: "
+                "5 s before and 1 s after each moment unless the request asks for something else. "
+                + (f"\nFacts recorded at this recording's moments (value x count):\n{facts}\n"
+                   "Prefer deciding filters by fact_key/fact_values chosen from these exact values. "
+                   if facts else "")
+                + 
                 "For text_terms, list the game's own on-screen wording (exact phrases), including "
                 "every variant that should count.")
-        return self._call(PLAN_TOOL, [{"type": "text", "text": text}])
+        return self._call(tool, [{"type": "text", "text": text}])
 
     def label_groups(self, game: str, groups: list[dict]) -> dict:
         text = (f"Game: {game}\nThese HUD elements were discovered in a recording without any "
@@ -173,12 +251,222 @@ class ClaudeLLM:
                 + json.dumps(groups, indent=1))
         return self._call(LABEL_TOOL, [{"type": "text", "text": text}])
 
+    def describe(self, images: list[np.ndarray], game: str, kind: str) -> dict:
+        content: list[dict[str, Any]] = [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                         "data": _jpeg_b64(im)}} for im in images]
+        content.append({"type": "text", "text":
+                        f"Consecutive screenshots from {game} around one '{kind}' moment. Record what "
+                        "happened: read every on-screen message about it and list searchable facts."})
+        return self._call(DESCRIBE_TOOL, content, max_tokens=600)
+
     def check(self, images: list[np.ndarray], question: str) -> dict:
         content: list[dict[str, Any]] = [
             {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
                                          "data": _jpeg_b64(im)}} for im in images]
         content.append({"type": "text", "text": question})
         return self._call(CHECK_TOOL, content, max_tokens=400)
+
+
+class _Worker:
+    """One long-lived `claude -p` process speaking stream-json.
+
+    Starting `claude` costs ~3-4 s before the model sees a token (process
+    start, auth, loading Claude Code's own prompt). A worker pays that once;
+    after that a text call takes ~2-3 s and an image check ~1.5-2 s, because
+    images go inline as base64 content instead of through file reads.
+    """
+
+    def __init__(self, binary: str, model: str, schema: dict):
+        import subprocess
+
+        self.calls = 0
+        self.proc = subprocess.Popen(
+            [binary, "-p", "--input-format", "stream-json", "--output-format", "stream-json",
+             "--verbose", "--model", model, "--json-schema", json.dumps(schema), "--tools", "",
+             "--no-session-persistence", "--disable-slash-commands"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, bufsize=1)
+
+    def ask(self, content: list[dict]) -> dict | None:
+        self.calls += 1
+        msg = {"type": "user", "message": {"role": "user", "content": content}}
+        self.proc.stdin.write(json.dumps(msg) + "\n")
+        self.proc.stdin.flush()
+        while True:
+            line = self.proc.stdout.readline()
+            if not line:
+                return None
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if d.get("type") == "result":
+                return d.get("structured_output")
+
+    def close(self) -> None:
+        try:
+            self.proc.stdin.close()
+            self.proc.terminate()
+        except Exception:
+            pass
+
+
+class WarmPool:
+    """Pre-started workers per answer shape, recycled before context builds up.
+
+    A worker's conversation grows with each call, which costs tokens and lets
+    one moment's screenshots linger into the next question. So each worker
+    answers at most `max_calls` questions and is then replaced - by a worker
+    that was already started in the background, so no caller ever waits on a
+    cold start. Call start() when the app launches and the first request is
+    as fast as the hundredth.
+    """
+
+    def __init__(self, binary: str, model: str, size: int = 4, max_calls: int = 6):
+        import queue
+        import threading
+
+        self.binary, self.model, self.size, self.max_calls = binary, model, size, max_calls
+        self._idle: dict[str, "queue.Queue[_Worker]"] = {}
+        self._schemas: dict[str, dict] = {}
+        self._lock = threading.Lock()
+        self._queue_mod = queue
+
+    def _key(self, schema: dict) -> str:
+        return hashlib.sha1(json.dumps(schema, sort_keys=True).encode()).hexdigest()[:12]
+
+    def _spawn(self, key: str) -> None:
+        import threading
+
+        def go():
+            self._idle[key].put(_Worker(self.binary, self.model, self._schemas[key]))
+        threading.Thread(target=go, daemon=True).start()
+
+    def start(self, schemas: list[dict], sizes: list[int] | None = None) -> None:
+        for i, schema in enumerate(schemas):
+            key = self._key(schema)
+            with self._lock:
+                if key in self._idle:
+                    continue
+                self._idle[key] = self._queue_mod.Queue()
+                self._schemas[key] = schema
+            for _ in range((sizes or [self.size] * len(schemas))[i]):
+                self._spawn(key)
+
+    def ask(self, schema: dict, content: list[dict], timeout: float = 180.0) -> dict | None:
+        key = self._key(schema)
+        if key not in self._idle:
+            self.start([schema], [1])
+        w = self._idle[key].get(timeout=timeout)
+        try:
+            out = w.ask(content)
+        except Exception:
+            out = None
+        if out is None or w.calls >= self.max_calls:
+            w.close()
+            self._spawn(key)          # replacement starts now, in the background
+        else:
+            self._idle[key].put(w)
+        return out
+
+    def close(self) -> None:
+        for q in self._idle.values():
+            while not q.empty():
+                q.get_nowait().close()
+
+
+class ClaudeCLILLM(ClaudeLLM):
+    """Same three calls, through the `claude` command line instead of an API key.
+
+    Uses whoever is signed in to Claude Code on this machine, so it needs no
+    key - convenient for development. Each call is a fresh `claude -p`
+    process with tools disabled (or only Read, to look at images) and the
+    tool's input schema passed as --json-schema, so the answer comes back
+    validated, as `structured_output`.
+
+    It is slower than the API: every process start carries Claude Code's own
+    system prompt, so a call takes ~5-9 s instead of ~1-2 s. Checks run in
+    parallel and every answer is cached, which hides most of that. For a
+    shipped product, use the API (each user signing in their own Claude Code
+    is not a distribution model).
+    """
+
+    def __init__(self, model: str = DEFAULT_MODEL, cache_dir: Path = CACHE_DIR,
+                 binary: str = "claude", timeout: float = 180.0, warm: bool = True,
+                 pool_size: int = 4):
+        import shutil
+
+        self.binary = shutil.which(binary) or binary
+        self.model, self.timeout = model, timeout
+        self.live_calls = 0
+        self.pool = WarmPool(self.binary, model, size=pool_size) if warm else None
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def _call(self, tool: dict, content: list[dict], max_tokens: int = 1500) -> dict:
+        import subprocess
+        import tempfile
+
+        key = hashlib.sha256(json.dumps(["cli", self.model, tool, content], sort_keys=True)
+                             .encode()).hexdigest()
+        path = self.cache_dir / f"{key}.json"
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+
+        if self.pool is not None:
+            # Each question stands alone even though the worker remembers
+            # earlier ones; say so, so earlier screenshots are not consulted.
+            fresh = [{"type": "text", "text": "New, independent question. Ignore all earlier "
+                                              "messages and images."}] + content
+            for _ in range(2):
+                self.live_calls += 1
+                out = self.pool.ask(tool["input_schema"], fresh, timeout=self.timeout)
+                if out is not None:
+                    path.write_text(json.dumps(out), encoding="utf-8")
+                    return out
+
+        with tempfile.TemporaryDirectory(prefix="smartreplay_") as tmp:
+            texts, images = [], []
+            for part in content:
+                if part["type"] == "text":
+                    texts.append(part["text"])
+                else:
+                    img = Path(tmp) / f"image_{len(images)}.jpg"
+                    img.write_bytes(base64.b64decode(part["source"]["data"]))
+                    images.append(str(img))
+            prompt = "\n\n".join(texts)
+            if images:
+                prompt = ("Look at these screenshots, in order: " + ", ".join(images) + "\n\n" + prompt)
+            # The prompt goes straight after -p: the list-valued flags below
+            # would otherwise swallow it as one more value.
+            cmd = [self.binary, "-p", prompt, "--model", self.model, "--output-format", "json",
+                   "--json-schema", json.dumps(tool["input_schema"])]
+            cmd += ["--tools", "Read", "--allowedTools", "Read"] if images else ["--tools", ""]
+            out, err = None, ""
+            for _ in range(2):  # one retry: transient CLI/auth/network hiccups happen
+                self.live_calls += 1
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout, cwd=tmp)
+                try:
+                    payload = json.loads(proc.stdout)
+                    out = payload.get("structured_output")
+                    err = payload.get("result", "")
+                except json.JSONDecodeError:
+                    err = (proc.stdout + proc.stderr)[:300]
+                if out is not None:
+                    break
+        if out is None:
+            raise RuntimeError(f"claude CLI returned no structured output: {err[:300]}")
+        path.write_text(json.dumps(out), encoding="utf-8")
+        return out
+
+
+    def preload(self) -> None:
+        """Start warm workers for every call shape now, before any request."""
+        if self.pool is not None:
+            self.pool.start([PLAN_TOOL["input_schema"], LABEL_TOOL["input_schema"],
+                             CHECK_TOOL["input_schema"], DESCRIBE_TOOL["input_schema"]],
+                            [1, 1, self.pool.size, self.pool.size])
 
 
 class FakeLLM:
@@ -189,7 +477,7 @@ class FakeLLM:
         self._checks = checks or (lambda images, q: {"answer": "unsure", "box": None, "why": "fake"})
         self.calls: list[tuple] = []
 
-    def plan(self, query, game, catalog):
+    def plan(self, query, game, catalog, facts=""):
         self.calls.append(("plan", query))
         return self._plan
 
@@ -201,8 +489,18 @@ class FakeLLM:
         self.calls.append(("check", question))
         return self._checks(images, question)
 
+    def describe(self, images, game, kind):
+        self.calls.append(("describe", kind))
+        return {"what_happened": "", "on_screen_text": [], "facts": {}}
+
 
 def default_llm() -> LLM:
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise RuntimeError("set ANTHROPIC_API_KEY (or pass an LLM explicitly)")
-    return ClaudeLLM()
+    """API when a key is set (fastest); otherwise the signed-in `claude` CLI."""
+    import shutil
+
+    backend = os.environ.get("SMARTREPLAY_BACKEND", "")
+    if backend == "api" or (not backend and os.environ.get("ANTHROPIC_API_KEY")):
+        return ClaudeLLM()
+    if backend == "cli" or shutil.which("claude"):
+        return ClaudeCLILLM()
+    raise RuntimeError("no model backend: set ANTHROPIC_API_KEY or install and sign in to `claude`")

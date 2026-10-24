@@ -53,6 +53,9 @@ class Filter:
     include: bool = True
     text_terms: list[str] = field(default_factory=list)
     visual: bool = True
+    fact_key: str | None = None
+    fact_values: list[str] = field(default_factory=list)
+    null_is_no: bool = False
 
 
 @dataclass
@@ -67,16 +70,45 @@ class RequestSpec:
 
     @classmethod
     def from_plan(cls, d: dict) -> "RequestSpec":
+        spec = cls._parse(d)
+        spec.filters = _merge_alternatives(spec.filters)
+        return spec
+
+    @classmethod
+    def _parse(cls, d: dict) -> "RequestSpec":
         return cls(
             anchor=_slug(d["anchor"]),
             filters=[Filter(concept=_slug(f["concept"]), description=f["description"],
                             include=bool(f.get("include", True)),
                             text_terms=list(f.get("text_terms") or []),
-                            visual=bool(f.get("visual", True))) for f in d.get("filters") or []],
+                            visual=bool(f.get("visual", True)),
+                            fact_key=f.get("fact_key"),
+                            fact_values=[v.lower() for v in f.get("fact_values") or []],
+                            null_is_no=bool(f.get("null_is_no", False)))
+                     for f in d.get("filters") or []],
             anchor_text_terms=list(d.get("anchor_text_terms") or []),
             before_s=float(d.get("before_s", 5.0)), after_s=float(d.get("after_s", 1.0)),
             limit=d.get("limit"), ambiguity=d.get("ambiguity", ""),
         )
+
+
+def _merge_alternatives(filters: list[Filter]) -> list[Filter]:
+    """Filters are ANDed. Two inclusion filters on the same fact (cause = fire,
+    cause = lava) can never both hold for one moment, so they can only have
+    meant OR - merge them into one filter that accepts either."""
+    out: list[Filter] = []
+    for f in filters:
+        twin = next((g for g in out if f.include and g.include and f.fact_key
+                     and g.fact_key == f.fact_key), None)
+        if twin is None:
+            out.append(f)
+            continue
+        twin.concept = f"{twin.concept}_or_{f.concept}"
+        twin.description = f"{twin.description} OR {f.description}"
+        twin.text_terms = list(dict.fromkeys(twin.text_terms + f.text_terms))
+        twin.fact_values = list(dict.fromkeys(twin.fact_values + f.fact_values))
+        twin.null_is_no = twin.null_is_no and f.null_is_no
+    return out
 
 
 def _slug(s: str) -> str:
@@ -157,6 +189,40 @@ def text_verdict(lines: list[str], yes_terms: list[str], other_terms: list[str])
     return "unknown", "no relevant text read"
 
 
+def fact_verdict(facts: dict | None, f: Filter) -> tuple[str, str]:
+    """Decide from prewarm's structured facts: exact, no vocabulary needed.
+
+    The moment's recorded value for the filter's key (cause, enemy, ...):
+    accepted -> yes; recorded but something else -> no; not recorded -> no
+    if the plan said absence fails the filter, otherwise unknown.
+    """
+    if not facts or not f.fact_key:
+        return "unknown", ""
+    val = ((facts.get("facts") or {}).get(f.fact_key) or "").lower().strip()
+    if not val:
+        return ("no", f"no {f.fact_key} recorded") if f.null_is_no else ("unknown", "")
+    if "<any>" in f.fact_values:
+        return "yes", f"fact {f.fact_key}={val!r}"
+    hit = any(v in val or val in v for v in f.fact_values if v)
+    return ("yes" if hit else "no"), f"fact {f.fact_key}={val!r}"
+
+
+def facts_catalog(index: dict, max_values: int = 25) -> str:
+    """The fact values actually recorded in this recording, for the plan."""
+    from collections import Counter
+
+    counts: dict[str, Counter] = {}
+    for o in index["occurrences"]:
+        for k, v in ((o.get("facts") or {}).get("facts") or {}).items():
+            v = (v or "<none>").lower()
+            counts.setdefault(k, Counter())[v if len(v) <= 40 else "<free text>"] += 1
+    lines = []
+    for k, c in counts.items():
+        vals = ", ".join(f"{v} x{n}" for v, n in c.most_common(max_values))
+        lines.append(f"{k}: {vals}")
+    return "\n".join(lines)
+
+
 # ------------------------------------------------------------------- results
 
 @dataclass
@@ -221,15 +287,23 @@ class Fulfiller:
             res = self.llm.label_groups(self.game, self._group_summaries())
             for lab in res.get("labels", []):
                 labels[str(lab["group"])] = {"concept": _slug(lab["concept"]),
+                                             "role": lab.get("role", "event"),
                                              "confidence": lab.get("confidence", 0),
                                              "why": lab.get("why", "")}
             source = "labelled this recording's groups (1 model call)"
         else:
             source = "group labels from memory"
+        rank = {"event": 0, "feed": 1}
         cands = [(int(g), v) for g, v in labels.items() if v["concept"] == concept]
         if not cands:
+            # Two independent calls can name one thing differently ("death" vs
+            # "death_screen"): fall back to sharing a word.
+            words = set(concept.split("_"))
+            cands = [(int(g), v) for g, v in labels.items() if words & set(v["concept"].split("_"))]
+        if not cands:
             return None, f"no discovered group is a '{concept}' ({source})"
-        g, _ = max(cands, key=lambda c: c[1].get("confidence", 0))
+        # Prefer an event over a feed of the same name, then the surer label.
+        g, _ = min(cands, key=lambda c: (rank.get(c[1].get("role", "event"), 2), -c[1].get("confidence", 0)))
         return g, source
 
     # filters --------------------------------------------------------------
@@ -249,16 +323,19 @@ class Fulfiller:
         key = f"{occ['id']}|{flt.concept}"
         cached = self.mem.rec["checks"].get(key)
         if cached:
-            return cached["answer"], f"vision (memory): {cached['why']}"
+            return cached["answer"], f"vision (memory): {cached['why']}", cached.get("evidence_text")
         frames = self._frames(occ["t"])
         if not frames:
-            return "unknown", "could not read frames"
+            return "unknown", "could not read frames", None
         q = (f"These are consecutive screenshots from {self.game} around one '{self.spec.anchor}' "
-             f"moment. Question: {flt.description} Answer yes, no, or unsure.")
+             f"moment. Read any on-screen text (messages, banners, kill feed) as well as the "
+             f"picture. Question: {flt.description} Answer yes, no, or unsure.")
         self.calls += 1
         res = self.llm.check(frames, q)
-        self.mem.rec["checks"][key] = {"answer": res.get("answer", "unsure"), "why": res.get("why", "")}
-        return res.get("answer", "unsure"), f"vision: {res.get('why', '')}"
+        ev = res.get("evidence_text")
+        self.mem.rec["checks"][key] = {"answer": res.get("answer", "unsure"), "why": res.get("why", ""),
+                                       "evidence_text": ev}
+        return res.get("answer", "unsure"), f"vision: {res.get('why', '')}", ev
 
     def fulfil(self, spec: RequestSpec) -> Fulfilment:
         self.spec = spec
@@ -270,47 +347,90 @@ class Fulfiller:
                 "next rung (not yet automatic): build a detector for the anchor from verified "
                 "exemplars - see verify_images.py"])
 
-        occs = [o for o in self.index["occurrences"] if o["group"] == gid]
-        occs = _collapse(occs)
-        for f in spec.filters:
-            # Memory first: phrases vision confirmed in earlier requests.
+        occs = _collapse([_with_facts(o) for o in self.index["occurrences"] if o["group"] == gid])
+        # Keyed by the group's stable label, not the plan's wording for the
+        # anchor, so every request about these moments shares what was learned.
+        cases_key = f"{self.mem.rec['labels'].get(str(gid), {}).get('concept', spec.anchor)}__cases"
+        # Inclusion filters first: they are the selective ones, and a moment
+        # one of them rules out never needs the others.
+        filters = sorted(spec.filters, key=lambda f: not f.include)
+        for f in filters:
             f.text_terms = list(dict.fromkeys(f.text_terms + self.mem.terms(f.concept)))
-        other = spec.anchor_text_terms
 
-        state: dict[str, Moment] = {o["id"]: Moment(o["id"], o["t"], "yes") for o in occs}
-        pending: list[tuple[dict, Filter]] = []
-        for o in occs:
-            for f in spec.filters:
-                v, why = text_verdict(o["text"], f.text_terms,
-                                      [t for t in other if t not in f.text_terms])
-                m = state[o["id"]]
-                m.evidence.append(f"{f.concept}: {why}")
-                if v == "unknown":
-                    pending.append((o, f))
-                elif (v == "yes") != f.include:
-                    m.verdict = "no"
+        def vocab_for(f: Filter) -> list[str]:
+            """Phrases that, if read, prove a case *other* than f's."""
+            pool = spec.anchor_text_terms + self.mem.terms(cases_key)
+            for g in filters:
+                if g is not f:
+                    pool += g.text_terms
+            pool = [t for t in dict.fromkeys(pool) if t not in f.text_terms]
+            # A phrase present at most of the anchor's moments describes the
+            # anchor itself ("You died!"), not one case of it - measured, not assumed.
+            return [t for t in pool
+                    if sum(phrase_in(t, " | ".join(o["text"])) for o in occs) <= 0.5 * max(1, len(occs))]
 
-        # Vision only for moments still alive and still undecided.
-        pending = [(o, f) for o, f in pending if state[o["id"]].verdict != "no" and f.visual]
-        if len(pending) > self.max_checks:
-            notes.append(f"{len(pending) - self.max_checks} moment(s) left undecided (check budget)")
-        todo, rest = pending[:self.max_checks], pending[self.max_checks:]
-        with ThreadPoolExecutor(max_workers=self.workers) as pool:
-            answers = list(pool.map(lambda of: self._vision(*of), todo))
-        for (o, f), (ans, why) in zip(todo, answers):
-            m = state[o["id"]]
+        state = {o["id"]: Moment(o["id"], o["t"], "yes") for o in occs}
+        open_: dict[str, list[Filter]] = {o["id"]: list(filters) for o in occs}
+        by_id = {o["id"]: o for o in occs}
+
+        def settle_by_text() -> None:
+            others = {f.concept: vocab_for(f) for f in filters}
+            for oid, todo in open_.items():
+                m = state[oid]
+                for f in list(todo):
+                    if m.verdict == "no":
+                        break
+                    v, why = fact_verdict(by_id[oid].get("facts"), f)
+                    if v == "unknown":
+                        v, why = text_verdict(by_id[oid]["text"], f.text_terms, others[f.concept])
+                    if v == "unknown":
+                        continue
+                    todo.remove(f)
+                    m.evidence.append(f"{f.concept}: {why}")
+                    if (v == "yes") != f.include:
+                        m.verdict = "no"
+
+        def apply(oid: str, f: Filter, ans: str, why: str, ev: str | None) -> None:
+            m = state[oid]
+            open_[oid].remove(f)
             m.evidence.append(f"{f.concept}: {why}")
             if ans == "unsure":
-                m.verdict = "maybe" if m.verdict != "no" else "no"
+                m.verdict = "maybe" if m.verdict == "yes" else m.verdict
             elif (ans == "yes") != f.include:
                 m.verdict = "no"
-            elif ans == "yes" and f.include:
-                # Learn the wording this game used, so text answers next time.
-                self.mem.learn_terms(f.concept, [ln for ln in o["text"][:2]
-                                                 if any(phrase_in(t, ln) for t in other)])
-        for o, f in rest + [(o, f) for o, f in pending if not f.visual]:
-            if state[o["id"]].verdict == "yes":
-                state[o["id"]].verdict = "maybe"
+            # Learn the wording vision relied on, so text settles it next time:
+            # a "yes" phrase belongs to this filter, a "no" phrase is another
+            # case of the anchor. Only phrases OCR can actually see are kept.
+            if ev and ans in ("yes", "no") and phrase_in(ev, " | ".join(by_id[oid]["text"]), 0.75):
+                if ans == "yes":
+                    self.mem.learn_terms(f.concept, [ev])
+                    f.text_terms = list(dict.fromkeys(f.text_terms + [ev]))
+                else:
+                    self.mem.learn_terms(cases_key, [ev])
+
+        settle_by_text()
+        budget = self.max_checks
+        # Vision in waves. After each wave, newly learned phrases are tried on
+        # every moment still open, so one look at "was shot by arrow" settles
+        # the other arrow deaths by text instead of by more vision calls.
+        while budget > 0:
+            wave = [(oid, todo[0]) for oid, todo in open_.items()
+                    if todo and state[oid].verdict != "no"][:min(self.workers, budget)]
+            if not wave:
+                break
+            with ThreadPoolExecutor(max_workers=self.workers) as pool:
+                answers = list(pool.map(lambda w: self._vision(by_id[w[0]], w[1]), wave))
+            budget -= len(wave)
+            for (oid, f), (ans, why, ev) in zip(wave, answers):
+                apply(oid, f, ans, why, ev)
+            settle_by_text()
+
+        undecided = [oid for oid, todo in open_.items() if todo and state[oid].verdict != "no"]
+        for oid in undecided:
+            state[oid].verdict = "maybe"
+            state[oid].evidence.append("undecided: check budget used up")
+        if undecided:
+            notes.append(f"{len(undecided)} moment(s) left undecided (check budget)")
 
         moments = sorted(state.values(), key=lambda m: m.t)
         if spec.limit:
@@ -318,6 +438,17 @@ class Fulfiller:
             moments = [m for m in moments if m.verdict != "yes" or m.id in keep]
         self.mem.save()
         return Fulfilment(spec, gid, source, moments, self.calls, notes)
+
+
+def _with_facts(o: dict) -> dict:
+    """Occurrence text plus whatever prewarm's vision pass read and noted."""
+    f = o.get("facts")
+    if not f:
+        return o
+    extra = list(f.get("on_screen_text") or [])
+    if f.get("what_happened"):
+        extra.append(f["what_happened"])
+    return dict(o, text=list(dict.fromkeys(extra + o["text"])))
 
 
 def _collapse(occs: list[dict], window: float = 8.0) -> list[dict]:
@@ -337,11 +468,17 @@ def run(out_dir: str | Path, query: str, game: str, llm: LLM, profiles: str | Pa
     out_dir = Path(out_dir)
     index = json.loads((out_dir / "index.json").read_text(encoding="utf-8"))
     mem = Memory(Path(profiles) / f"{_slug(game)}.json", out_dir / "memory.json")
-    catalog = sorted({v["concept"] for v in mem.rec["labels"].values()})
-    spec = RequestSpec.from_plan(llm.plan(query, game, catalog))
     f = Fulfiller(index, game, llm, mem)
-    f.calls = 1  # the plan
+    # Label first (once per recording), so the plan can pick its anchor from
+    # the names this recording actually has.
+    f.resolve_anchor("")
+    catalog = sorted({f"{v['concept']} ({v.get('role', 'event')})" for v in mem.rec["labels"].values()
+                      if v["concept"] != "unknown"})
+    spec = RequestSpec.from_plan(llm.plan(query, game, catalog, facts_catalog(index)))
+    f.calls += 1  # the plan
     result = f.fulfil(spec)
+    if hasattr(llm, "live_calls"):
+        result.model_calls = llm.live_calls  # cache hits cost nothing; count only real calls
     if reel and result.matches:
         from .query import cut_reel
         moments = [{"id": m.id, "t": m.t} for m in result.matches + result.maybes]

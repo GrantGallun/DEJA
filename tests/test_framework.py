@@ -169,3 +169,17 @@ def test_untrustworthy_detector_is_flagged():
     llm = FakeLLM(checks=lambda imgs, q: {"answer": "yes", "box": [0.3, 0.2, 0.7, 0.4], "why": ""})
     det = vi.build_detector(images, "TestGame", "x", "x", llm, [_scene(rng, element=False) for _ in range(30)])
     assert not det.trusted
+
+
+def test_same_fact_inclusions_mean_or():
+    plan = dict(PLAN, filters=[
+        {"concept": "fire", "description": "fire", "include": True, "text_terms": ["went up in flames"],
+         "visual": True, "fact_key": "cause", "fact_values": ["fire"], "null_is_no": True},
+        {"concept": "lava", "description": "lava", "include": True, "text_terms": ["tried to swim in lava"],
+         "visual": True, "fact_key": "cause", "fact_values": ["lava"], "null_is_no": True}])
+    spec = fulfil.RequestSpec.from_plan(plan)
+    assert len(spec.filters) == 1 and spec.filters[0].fact_values == ["fire", "lava"]
+    facts = {"facts": {"cause": "lava"}}
+    assert fulfil.fact_verdict(facts, spec.filters[0])[0] == "yes"
+    assert fulfil.fact_verdict({"facts": {"cause": "fall"}}, spec.filters[0])[0] == "no"
+    assert fulfil.fact_verdict({"facts": {"cause": None}}, spec.filters[0])[0] == "no"
