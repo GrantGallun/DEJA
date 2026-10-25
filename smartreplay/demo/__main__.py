@@ -5,6 +5,7 @@ import webbrowser
 
 from .. import player_settings
 from .server import DemoServer, DemoSession
+from ..frontend.runtime import ServiceLease
 
 
 def main():
@@ -15,6 +16,11 @@ def main():
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--skip-model-check", action="store_true")
     args = parser.parse_args()
+    with ServiceLease(args.data_dir):
+        return run(args)
+
+
+def run(args):
     session = DemoSession(args.data_dir, settings_file=player_settings.default_path())
     if args.video:
         session.import_video(args.video)

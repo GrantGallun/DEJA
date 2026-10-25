@@ -117,13 +117,24 @@ class Host(NativeRecorder):
         self.played = []
         self.closed = threading.Event()
         self.stopped = False
+        self.snapshots = []
+        self.flushes = []
 
     def status(self): return dict(self.state)
     def session(self, session_id):
         assert session_id in ("captured", "browser-selected")
-        return {"id": session_id, "duration_s": 20, "segments": [], "state": "closed"}
+        return {"id": session_id, "duration_s": 30 if len(self.flushes) > 1 else 20,
+                "segments": [], "state": "recording"}
     def sessions(self): return []
-    def flush(self, session_id): assert session_id == "captured"
+    def flush(self, session_id):
+        assert session_id == "captured"
+        self.flushes.append(session_id)
+    def snapshot(self, manifest, start_s, end_s):
+        self.snapshots.append((manifest["id"], start_s, end_s))
+        # Remux includes the whole containing segment; playback must offset into it.
+        match = Match("c" * 32, self.root / "continuation.mp4", 20,
+                      "2026-10-25T01:00:00Z", "native")
+        return NativeSnapshot(match, 10, manifest["id"])
     def voice_feedback(self, request, state, message, transcript=""):
         if request["instance_id"] != self.state["instance_id"]: return False
         self.feedback.append((state, message, transcript))
@@ -213,12 +224,14 @@ def test_background_voice_reserves_question_busy_uses_capture_identity_and_repla
     transcriber.release.set()
     state = wait_done(session)
     assert queries.seen == [("captured", "Show the last yellow fall", None, None)]
-    assert session.native.played == [("b" * 32, 1, 6)]
+    assert session.native.snapshots == [("captured", 11, 30)]
+    assert session.native.played == [("c" * 32, 1, 20)]
     assert state["result"]["native_auto_played"] is True
     assert state["result"]["matches"][0]["session_time_s"] == 14
     assert state["voice"]["state"] == "replaying" and state["voice"]["transcript"] == "Show the last yellow fall"
     assert not audio.exists() and not session.native.stopped
-    assert [item[0] for item in session.native.feedback] == ["transcribing", "searching", "replaying"]
+    assert state["result"]["native_playback"]["session_end_s"] == 30
+    assert [item[0] for item in session.native.feedback] == ["transcribing", "searching", "searching", "replaying"]
 
 
 @pytest.mark.parametrize("matches", [[], [{"verdict": "maybe", "start_s": 1, "end_s": 6, "time_s": 4}],
@@ -457,7 +470,7 @@ def test_successful_transcription_recovers_the_model_status_after_failed_warmup(
     assert wait_done(session)["voice"]["model"]["state"] == "ready"
 
 
-def test_voice_skips_uncertain_candidates_and_opens_only_the_first_confirmed_interval(make_session):
+def test_voice_skips_uncertain_candidates_and_plays_from_first_confirmed_start_to_present(make_session):
     session, transcriber, _ = make_session([
         {"verdict": "maybe", "start_s": 0, "end_s": 2, "time_s": 1},
         {"verdict": "yes", "start_s": 2, "end_s": 4, "time_s": 3},
@@ -467,5 +480,21 @@ def test_voice_skips_uncertain_candidates_and_opens_only_the_first_confirmed_int
     assert transcriber.entered.wait(1)
     transcriber.release.set()
     assert wait_done(session)["result"]["native_auto_played"] is True
-    assert session.native.played == [("b" * 32, 2, 4)]
+    assert session.native.snapshots == [("captured", 12, 30)]
+    assert session.native.played == [("c" * 32, 2, 20)]
+
+
+def test_canceled_voice_during_continuation_preparation_never_opens_replay(make_session):
+    session, transcriber, _ = make_session()
+    original_snapshot = session.native.snapshot
+    def cancel_during_snapshot(*args):
+        result = original_snapshot(*args)
+        session.native.state["voice"] = {"request_id": "", "state": "idle"}
+        return result
+    session.native.snapshot = cancel_during_snapshot
+    submit(session)
+    assert transcriber.entered.wait(1)
+    transcriber.release.set()
+    assert "canceled or expired" in wait_done(session)["error"]
+    assert not session.native.played
 

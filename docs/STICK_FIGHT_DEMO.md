@@ -1,4 +1,76 @@
-# Native session demo
+# Deja demo
+
+## Launch through deja
+
+Deja **0.2.6** includes **Recordings** beside **Settings**. Select a saved session to
+watch it with seeking, speed, volume and fullscreen controls. The list refreshes
+without interrupting playback. Opening an active session shows its finalized
+footage so far; open it again for a newer snapshot.
+
+Use **Search recording** for a typed question, or **Ask with microphone**, then
+**Stop and search**, for a spoken question of up to 15 seconds. The microphone is
+released after recording, when selecting a different session, or when leaving the
+view. Voice is transcribed locally and uses the same selected-session search.
+Search results include index-coverage limits and buttons to watch candidate
+moments; an absent or failed search clears prior result playback.
+
+Speech checks for missing Windows CUDA libraries before selecting the GPU and
+retries locally on CPU if an inference-time CUDA library failure occurs. Version
+0.2.2 uses the smaller `base.en` model for CPU voice questions; running the large
+GPU model on CPU caused roughly minute-long transcription delays on this machine.
+The installer caches the CPU model so voice does not download it while listening.
+`SMARTREPLAY_VOICE_CPU_MODEL` can override it separately from the GPU voice model.
+Codex is selected and its live connection check succeeded during installation.
+
+In-game voice replay starts at the confirmed moment and continues through the
+footage available when the replay is prepared, including gameplay captured during
+the search. This endpoint is fixed; new gameplay is not appended while watching.
+Press **7** (the installed replay toggle) to stop and close the replay immediately.
+Version 0.2.4 starts video independently of Windows audio-device discovery, which
+previously blocked the native heartbeat long enough to report a playback timeout.
+Audio attaches when ready; closing a replay cancels that attachment for its player.
+
+Version 0.2.5 keeps one desktop window per recording directory. Opening deja again
+restores the existing window. If the app crashes but its recorder survives, the next
+launch acquires the released service lease and reconnects to that same recording.
+Pending voice answers from the crashed service are canceled so you can ask again.
+An unresponsive orphan is replaced only after its executable, process start time,
+and native directory lock are verified. Finalized recordings remain intact; a forced
+restart can lose the unfinished segment. A recorder owned by a live service is never
+taken over. Closing the recovered app also finalizes and stops its adopted recorder.
+
+Version 0.2.6 accepts the Realtek microphone's float-only input format and converts
+it to the same bounded 16-bit PCM WAV used by local speech recognition. Int16,
+Int32, Float and UInt8 inputs are supported at 8–48 kHz in mono or stereo. When the
+default microphone changes during capture, that take is canceled and the device
+is released. Hold the voice shortcut again to use the new Windows default input.
+Already submitted questions continue processing after a device change.
+
+Press the Windows key, type **deja**, and open it. Deja now owns the native player,
+recorder, session index and voice worker; no demo browser page or separate terminal
+is needed. Switch to Stick Fight once so the native detector can select it. Capture
+then remains attached while you return to deja. A minimized game may stop delivering
+frames until restored.
+
+The status bar shows startup, waiting for gameplay, recording, or a startup failure.
+Hover it for model, speech and settings errors. Model connection failure does not
+prevent recording or the ordinary replay hotkeys. Closing deja stops its owned
+player and finalizes capture. Keep deja open while playing.
+
+Run `./Install-Deja.ps1` to create or refresh the Start menu shortcut. It installs
+missing capture/voice dependencies and pywebview into a local Python 3.11+ and
+builds the native executable if missing (the existing Qt/CMake/MinGW toolchain
+and GameHQ checkout are required).
+This remains a checkout-based installation: the shortcut and player use this
+repository's paths. It is not yet a portable installer.
+
+Only one service can own a recording directory. Reopening deja focuses its existing
+window; a separate demo service reports that the directory is already in use.
+
+## Developer demo page (optional)
+
+The following page is for development and manual diagnostics; normal use starts
+through deja as described above. Close deja before launching this separate service.
 
 Run `./Run-Demo.ps1` from the repository folder. The page opens at <http://127.0.0.1:8766>. Keep the launcher running. Run it from your normal Windows terminal so it can see game windows and reach the model service.
 

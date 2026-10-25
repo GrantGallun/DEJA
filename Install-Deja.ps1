@@ -1,5 +1,5 @@
 param([switch]$NoLaunch)
-# Adds deja (the replay player settings app) to the Start menu and opens it.
+# Adds deja (settings, automatic capture and replay) to the Start menu and opens it.
 # The shortcut carries deja's icon and the AppUserModelID the window claims
 # (smartreplay/frontend/window.py), so its taskbar button shows the logo and
 # "Pin to taskbar" pins this shortcut rather than Python.
@@ -18,16 +18,42 @@ $dejaCandidates += @(Get-ChildItem -Path "$env:LOCALAPPDATA\Programs\Python\Pyth
 $dejaCommand = Get-Command python -ErrorAction SilentlyContinue
 if ($dejaCommand) { $dejaCandidates += $dejaCommand.Source }
 $pythonw = $null
+$dejaInstallPython = $null
 $storeOnly = $false
 foreach ($dejaCandidate in ($dejaCandidates | Select-Object -Unique)) {
-    $exe = & $dejaCandidate -c 'import sys, webview, smartreplay.frontend.window; print(sys.executable)' 2>$null
+    try { $exe = & $dejaCandidate -c 'import sys; print(sys.executable if sys.version_info >= (3, 11) else "")' 2>$null } catch { continue }
     if ($LASTEXITCODE -ne 0 -or !$exe) { continue }
     if ($exe -like '*\WindowsApps\*') { $storeOnly = $true; continue }
     $candidateW = Join-Path (Split-Path $exe) 'pythonw.exe'
-    if (Test-Path -LiteralPath $candidateW) { $pythonw = $candidateW; break }
+    if (!(Test-Path -LiteralPath $candidateW)) { continue }
+    if (!$dejaInstallPython) { $dejaInstallPython = $exe }
+    try {
+        & $exe -c 'import webview, cv2, scipy, PIL, imageio_ffmpeg, faster_whisper, anthropic, smartreplay.demo.server, smartreplay.frontend.window' 2>$null
+        if ($LASTEXITCODE -eq 0) { $pythonw = $candidateW; break }
+    } catch { }
 }
-if (!$pythonw -and $storeOnly) { throw 'Only the Microsoft Store Python has pywebview, and its windows show the Python icon. Install Python from python.org, then: python -m pip install pywebview' }
-if (!$pythonw) { throw 'Install pywebview first: python -m pip install pywebview. Or set SMARTREPLAY_PYTHON to a Python that has it.' }
+if (!$pythonw -and $dejaInstallPython) {
+    Write-Host 'Installing deja recording, voice and window dependencies...'
+    & $dejaInstallPython -m pip install -r (Join-Path $PSScriptRoot 'requirements-demo.txt') pywebview
+    if ($LASTEXITCODE -ne 0) { throw 'Deja dependencies could not be installed. Check the installation output above.' }
+    & $dejaInstallPython -c 'import webview, cv2, scipy, PIL, imageio_ffmpeg, faster_whisper, anthropic, smartreplay.demo.server, smartreplay.frontend.window'
+    if ($LASTEXITCODE -ne 0) { throw 'Deja dependencies were installed but could not load.' }
+    $pythonw = Join-Path (Split-Path $dejaInstallPython) 'pythonw.exe'
+}
+if (!$pythonw -and $storeOnly) { throw 'Install Python 3.11 or later from python.org. The Microsoft Store build does not support deja taskbar identity.' }
+if (!$pythonw) { throw 'Install Python 3.11 or later from python.org, or set SMARTREPLAY_PYTHON to its python.exe.' }
+$dejaSpeechPython = Join-Path (Split-Path $pythonw) 'python.exe'
+Write-Host 'Preparing local microphone recognition...'
+& $dejaSpeechPython -c 'import os; from faster_whisper.utils import download_model; download_model(os.environ.get("SMARTREPLAY_VOICE_CPU_MODEL", "base.en"))'
+if ($LASTEXITCODE -ne 0) { throw 'The local microphone model could not be installed. Check your connection and run the installer again.' }
+$dejaNative = if ($env:SMARTREPLAY_NATIVE_EXE) { $env:SMARTREPLAY_NATIVE_EXE } else { Join-Path $PSScriptRoot 'experiments\gamehq-passive\out-passive\GameHQPassiveReplay.exe' }
+if (!(Test-Path -LiteralPath $dejaNative -PathType Leaf)) {
+    if ($env:SMARTREPLAY_NATIVE_EXE) { throw "The configured native player does not exist: $dejaNative" }
+    Write-Host 'Building the deja native player...'
+    # Run in a separate PowerShell: the native build script exits its shell.
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'experiments\gamehq-passive\spike\passive-replay\build.ps1')
+    if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $dejaNative -PathType Leaf)) { throw 'The native player could not be built. Check that the GameHQ checkout and its Qt/CMake/MinGW toolchain are installed.' }
+}
 
 Add-Type -TypeDefinition @'
 using System;
@@ -105,7 +131,7 @@ namespace Deja {
 }
 '@
 
-[Deja.Shortcut]::Save($shortcut, $pythonw, '-m smartreplay.frontend --window', $PSScriptRoot, $icon, 'deja: replay player settings', $appId)
+[Deja.Shortcut]::Save($shortcut, $pythonw, '-m smartreplay.frontend --window', $PSScriptRoot, $icon, 'deja: automatic game recording and replay', $appId)
 Write-Host "Added deja to the Start menu: $shortcut"
 Write-Host 'To keep it on the taskbar, right-click its taskbar button and choose Pin to taskbar.'
 if (!$NoLaunch) { Start-Process -FilePath $shortcut }

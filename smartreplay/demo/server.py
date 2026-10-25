@@ -25,7 +25,7 @@ _VOICE_POLL_INTERVAL_S = .25
 class DemoSession:
     def __init__(self, root: Path, model_factory=None, recorder_factory=None, window_finder=game_window,
                  native_factory=NativeRecorder, session_search_factory=None, voice_transcriber=None,
-                 settings_file: Path | None = None):
+                 settings_file: Path | None = None, native_recovery=None):
         self.root = Path(root).resolve()
         self.store = MatchStore(self.root / "matches")
         # With a settings file, model.provider (edited in deja) picks the backend and
@@ -37,6 +37,9 @@ class DemoSession:
         self.model_factory = model_factory or self._make_model
         self.window_finder = window_finder
         self.native = native_factory(self.root, self.store)
+        self.native.settings_file = self.settings_file
+        if native_recovery is not None:
+            native_recovery(self.native)
         self.session_search_factory = session_search_factory
         self.queries = None
         self.selected_session_id = None
@@ -331,10 +334,23 @@ class DemoSession:
                               if snapshot and self._confirmed_interval(item, snapshot.duration)), None)
             result["native_auto_played"] = False
             if confirmed:
+                # Search exports only a short evidence window. Once its start is
+                # confirmed, freeze a new replay through the current capture edge,
+                # including gameplay recorded while the model was searching.
+                start = snapshot.origin_s + confirmed["start_s"]
+                self._voice_update(request, "searching", "Preparing replay through the present…", transcript)
+                self.native.flush(request["session_id"])
                 self._assert_voice_current(request)
-                self.native.play(snapshot.match, confirmed["start_s"], confirmed["end_s"],
+                manifest = self.native.session(request["session_id"])
+                playback = self.native.snapshot(manifest, start, manifest["duration_s"])
+                self._assert_voice_current(request)
+                playback_start = start - playback.origin_s
+                playback_end = min(playback.duration, manifest["duration_s"] - playback.origin_s)
+                self.native.play(playback.match, playback_start, playback_end,
                                  instance_id=request["instance_id"], voice_id=request["id"], session_id=request["session_id"])
                 result["native_auto_played"] = True
+                result["native_playback"] = {"match_id": playback.match.id,
+                    "session_start_s": start, "session_end_s": playback.origin_s + playback_end}
             if self._publish_session_result(snapshot, result):
                 self._voice_update(request, "replaying" if confirmed else "no_match",
                     "Replaying the confirmed moment." if confirmed else "No matching moment was confirmed. Try another description.", transcript)

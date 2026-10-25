@@ -1,4 +1,4 @@
-"""deja as a desktop app: the settings page in a window of its own.
+"""deja desktop app: settings plus its background recorder and replay service.
 
     python -m smartreplay.frontend --window        # pythonw for no console
 
@@ -17,13 +17,21 @@ import os
 import threading
 from pathlib import Path
 
-from .server import STATIC, make_server
+from .server import STATIC, DEMO_MATCHES, make_server
+from .instance import DesktopInstance
 
 APP_ID = "SmartReplay.Deja"
 ICON = STATIC / "deja.ico"
 
 
 def run(settings_file: Path | None = None, footage: Path | None = None) -> int:
+    with DesktopInstance(DEMO_MATCHES.parent) as instance:
+        if not instance.primary:
+            return 0
+        return _run_window(settings_file, footage)
+
+
+def _run_window(settings_file=None, footage=None) -> int:
     try:
         import webview
     except ImportError:
@@ -33,10 +41,11 @@ def run(settings_file: Path | None = None, footage: Path | None = None) -> int:
         # Before any window exists, or the taskbar files it under python.exe.
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
     server = make_server(settings_file, 0, footage)
+    server.start_player()
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    webview.create_window("deja", server.origin + "/", width=1360, height=900, min_size=(880, 600),
-                          background_color="#0e0c14")
     try:
+        webview.create_window("deja", server.origin + "/", width=1360, height=900, min_size=(880, 600),
+                              background_color="#0e0c14")
         webview.start(icon=str(ICON))
     finally:
         server.shutdown()

@@ -34,6 +34,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .. import player_settings as ps
+from .. import __version__
 from ..providers import deepseek_key
 
 STATIC = Path(__file__).with_name("static")
@@ -50,9 +51,14 @@ TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
 class SettingsServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, settings_file: Path, port: int = 0, footage: Path | None = None):
+    def __init__(self, settings_file: Path, port: int = 0, footage: Path | None = None,
+                 recordings_root: Path | None = None):
         self.settings_file = Path(settings_file)
         self.footage = Path(footage) if footage else None
+        self.runtime = None
+        self.recordings_root = Path(recordings_root or DEMO_MATCHES.parent)
+        self._recordings = None
+        self._recordings_lock = threading.Lock()
         # One save at a time: two tabs saving together must not interleave
         # their read-modify-write of the revision counter.
         self.save_lock = threading.Lock()
@@ -61,6 +67,46 @@ class SettingsServer(ThreadingHTTPServer):
     @property
     def origin(self) -> str:
         return f"http://127.0.0.1:{self.server_address[1]}"
+
+    def start_player(self):
+        from .runtime import PlayerRuntime
+        if self.runtime is None:
+            self.runtime = PlayerRuntime(DEMO_MATCHES.parent, self.settings_file)
+            self.runtime.start()
+
+    def player_status(self):
+        status = ps.player_status(self.settings_file)
+        if self.runtime is not None:
+            status["runtime"] = self.runtime.snapshot()
+        return status
+
+    @property
+    def recordings(self):
+        from .recordings import RecordingLibrary
+        with self._recordings_lock:
+            if self._recordings is None:
+                self._recordings = RecordingLibrary(self.recordings_root,
+                    searcher=self.search_recording, transcriber=self.transcribe_question)
+            return self._recordings
+
+    def search_recording(self, identity, question):
+        if self.runtime is None:
+            raise RuntimeError("Start deja's player service before searching recordings.")
+        return self.runtime.search_recording(identity, question)
+
+    def transcribe_question(self, path):
+        if self.runtime is None:
+            raise RuntimeError("Start deja's player service before using voice search.")
+        return self.runtime.transcribe_question(path)
+
+    def server_close(self):
+        try:
+            if self.runtime is not None:
+                self.runtime.close()
+            if self._recordings is not None:
+                self._recordings.close()
+        finally:
+            super().server_close()
 
     def footage_file(self) -> Path | None:
         """The clip the preview plays: the footage file, or the newest .mp4 under it."""
@@ -159,10 +205,10 @@ class Handler(BaseHTTPRequestHandler):
         clip = self.server.footage_file()
         # The version keeps a newer recording from being served from cache.
         footage = f"/api/footage?v={clip.stat().st_mtime_ns}" if clip else None
-        return {"settings": settings, "issues": issues, "defaults": ps.defaults(),
+        return {"version": __version__, "settings": settings, "issues": issues, "defaults": ps.defaults(),
                 "themes": ps.THEMES, "path": str(self.server.settings_file),
                 "exists": self.server.settings_file.exists(),
-                "status": ps.player_status(self.server.settings_file),
+                "status": self.server.player_status(),
                 "footage": footage,
                 # Whether a key exists, never the key: the page only says if DeepSeek can sign in.
                 "providers": {"deepseek": {"key": deepseek_key() is not None}}}
@@ -173,10 +219,27 @@ class Handler(BaseHTTPRequestHandler):
         if not self._allowed():
             return self._json(HTTPStatus.FORBIDDEN, {"error": "Forbidden host or origin."})
         route = self.path.split("?", 1)[0]
+        if route == "/api/recordings":
+            return self._json(HTTPStatus.OK, {"recordings": self.server.recordings.list()})
+        recording = re.fullmatch(r"/api/recordings/([A-Za-z0-9_-]{1,100})/(playback|media|search|search-media)(?:/([a-f0-9]{32}))?", route)
+        if recording:
+            identity, action, token = recording.groups()
+            try:
+                library = self.server.recordings
+                if action == "playback" and token is None:
+                    return self._json(HTTPStatus.OK, library.playback(identity))
+                if action == "search" and token:
+                    return self._json(HTTPStatus.OK, library.search_status(identity, token))
+                if action in ("media", "search-media") and token:
+                    path = library.media(identity, token) if action == "media" else library.search_media(identity, token)
+                    return self._send_file(path, "video/mp4")
+            except (ValueError, OSError) as exc:
+                return self._json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+            return self._json(HTTPStatus.NOT_FOUND, {"error": "Not found."})
         if route == "/api/settings":
             return self._json(HTTPStatus.OK, self._snapshot())
         if route == "/api/status":
-            return self._json(HTTPStatus.OK, ps.player_status(self.server.settings_file))
+            return self._json(HTTPStatus.OK, self.server.player_status())
         if route == "/api/footage":
             clip = self.server.footage_file()
             if clip is None:
@@ -192,6 +255,28 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._allowed():
             return self._json(HTTPStatus.FORBIDDEN, {"error": "Forbidden host or origin."})
+        recording = re.fullmatch(r"/api/recordings/([A-Za-z0-9_-]{1,100})/(prepare|search|voice)", self.path)
+        if recording:
+            identity, action = recording.groups()
+            try:
+                library = self.server.recordings
+                if action == "prepare":
+                    result = library.prepare(identity)
+                elif action == "search":
+                    body = self._body()
+                    if not isinstance(body, dict):
+                        raise ValueError("Enter a search question.")
+                    result = library.search(identity, body.get("question"))
+                else:
+                    length = int(self.headers.get("Content-Length") or 0)
+                    if not self.headers.get("Content-Type", "").startswith("audio/") or not 1 <= length <= 2 * 1024 * 1024:
+                        raise ValueError("Record a voice question of up to 15 seconds.")
+                    result = library.search(identity, audio=self.rfile.read(length))
+                return self._json(HTTPStatus.ACCEPTED, result)
+            except (ValueError, OSError) as exc:
+                return self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            except RuntimeError as exc:
+                return self._json(HTTPStatus.CONFLICT, {"error": str(exc)})
         if self.path != "/api/validate":
             return self._json(HTTPStatus.NOT_FOUND, {"error": "Not found."})
         try:
@@ -233,6 +318,7 @@ def make_server(settings_file: Path | None = None, port: int = 8765,
 def serve(settings_file: Path | None = None, port: int = 8765, open_browser: bool = True,
           footage: Path | None = None) -> int:
     server = make_server(settings_file, port, footage)
+    server.start_player()
     url = server.origin + "/"
     print(f"Smart Replay settings: {url}")
     print(f"  file: {server.settings_file}")

@@ -6,4 +6,4 @@ that event HUD pixels are temporally distinguishable from world geometry:
 they snap to a tight value and hold it for seconds at a time, repeatedly.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.6"

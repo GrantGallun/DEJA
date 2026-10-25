@@ -643,6 +643,12 @@ function renderPlayer() {
   if (minimal && zoom.z > 1.01) {
     video.append(h("div", { class: "pv-badge", style: { fontSize: px(11 * fs) } }, `Zoom ${zoom.z.toFixed(1)}×`));
   }
+  // With no title bar, Minimal shows the way to the full session in the corner while in control.
+  if (minimal && active) {
+    const key = plainChord(s.player_keys.history);
+    video.append(h("span", { class: "pv-btn pv-history", style: { width: px(118 * fs), height: px(28 * fs), fontSize: px(12 * fs) } },
+      key ? `Full session · ${key}` : "Full session"));
+  }
   if (a.show_key_hints && active && s.input.mode !== "mouse") {
     video.append(h("div", { class: "pv-legend", style: { height: px(22 * fs), fontSize: px(11 * fs), bottom: minimal ? "12px" : 0 } }, legend(s)));
   }
@@ -767,6 +773,24 @@ function renderChrome() {
 
 function renderStatus() {
   const st = state.status, el = $("#player-status"), label = $(".label", el);
+  if (st.runtime) {
+    const rt = st.runtime;
+    const errors = [rt.model, rt.voice_model, rt.voice].filter((x) => x && x.state === "error");
+    const hotkeyErrors = Object.values(st.hotkeys || {}).filter((x) => x.state === "failed" || x.state === "invalid");
+    const problems = (st.issues || []).length + hotkeyErrors.length;
+    const behind = st.running && state.saved && (st.revision ?? -1) < state.saved.revision;
+    el.className = `player-status ${rt.state === "error" ? "bad" : rt.state === "recording" ? "ok" : "pending"}`;
+    label.textContent = rt.message + (errors.length ? " · AI/voice needs attention" : "");
+    if (problems) {
+      el.className = "player-status bad";
+      label.textContent += ` · ${problems} setting${problems > 1 ? "s" : ""} not applied`;
+    } else if (behind) {
+      el.className = "player-status pending";
+      label.textContent += performance.now() - state.savedAt > 5000 ? " · hasn't picked up the last save" : " · applying settings…";
+    }
+    el.title = [rt.message, ...errors.map((x) => x.message), ...hotkeyErrors.map((x) => x.detail || x.state), ...(st.issues || []).map((x) => x.message || x)].filter(Boolean).join("\n");
+    return;
+  }
   if (!st.running) {
     el.className = "player-status";
     label.textContent = "Player not running · settings apply when it starts";
@@ -831,6 +855,7 @@ async function save() {
 }
 
 function accept(snapshot) {
+  $("#app-version").textContent = snapshot.version ? `v${snapshot.version}` : "";
   state.saved = snapshot.settings;
   state.draft = clone(snapshot.settings);
   state.defaults = snapshot.defaults;

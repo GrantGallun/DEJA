@@ -19,6 +19,7 @@ import uuid
 import wave
 
 from .capture import Match, MatchStore, NO_WINDOW, ffmpeg_binary
+from .native_process import attach_native_process
 
 
 def atomic_json(path: Path, value):
@@ -87,6 +88,7 @@ class NativeRecorder:
             raise ValueError("The replay cache must be between 8 and 1024 MiB.")
         self.cache_mb = cache_mb
         self.process = None
+        self.settings_file = None
         self._log = None
         self._rpc_lock, self._snapshot_lock = threading.Lock(), threading.Lock()
         self._snapshots = OrderedDict()
@@ -95,9 +97,12 @@ class NativeRecorder:
         (self.control_dir / "responses").mkdir(parents=True, exist_ok=True)
 
     def command(self):
-        return [str(self.binary), "--full-sessions", "--session-root", str(self.session_root),
+        command = [str(self.binary), "--full-sessions", "--session-root", str(self.session_root),
                 "--control-dir", str(self.control_dir), "--media-root", str(self.store.root),
                 "--replay-cache-mb", str(self.cache_mb), "--log", str(self.control_dir / "native.jsonl")]
+        if self.settings_file is not None:
+            command += ["--settings", str(Path(self.settings_file).resolve())]
+        return command
 
     def status(self):
         unavailable = {"available": False, "recording": False, "session_id": None, "active_session": None,
@@ -138,6 +143,57 @@ class NativeRecorder:
             self._log.close()
             raise
         return {"ok": True, "starting": True}
+
+    def recover(self, owner_lease):
+        """Reconnect an orphan only after the prior Python service lost its lease."""
+        if (getattr(owner_lease, "file", None) is None
+                or Path(owner_lease.path).resolve() != self.root / "service.lock"):
+            raise RuntimeError("Recorder recovery requires exclusive service ownership.")
+        path = self.control_dir / "status.json"
+        if not path.exists():
+            return False
+        try:
+            prior = json.loads(path.read_text(encoding="utf-8-sig"))
+            pid, instance = prior["pid"], prior["instance_id"]
+            if prior.get("version") != 1 or not isinstance(instance, str) or not instance:
+                raise ValueError("Invalid identity")
+            process = attach_native_process(pid, self.binary, prior["updated_at"])
+        except (KeyError, ValueError, TypeError) as exc:
+            raise RuntimeError("Cannot verify the old recorder's status.") from exc
+        if process is None:
+            return False
+        try:
+            try:
+                lock_pid = int((self.control_dir / "native.lock").read_text().splitlines()[0])
+            except (OSError, ValueError, IndexError):
+                lock_pid = None
+            if lock_pid != pid:
+                raise RuntimeError("Cannot verify that the old recorder owns this recording directory.")
+            state = self.status()
+            if state.get("available") and state.get("instance_id") == instance:
+                try:
+                    self.request("start", expected_instance=instance)
+                    # Old in-flight answers died with their Python service.
+                    voice = state.get("voice") or {}
+                    if voice.get("request_id") and voice.get("state") in ("transcribing", "searching"):
+                        self.voice_feedback({"id": voice["request_id"], "instance_id": instance},
+                            "error", "Deja reconnected. Hold your voice shortcut to ask again.")
+                    self.process = process
+                    return True
+                except RuntimeError:
+                    pass
+            # An unresponsive orphan cannot publish or accept new footage safely.
+            # Try finalizing first; terminate only the verified, retained handle.
+            try:
+                self.request("stop", timeout=3, expected_instance=instance)
+            except RuntimeError:
+                pass
+            process.terminate()
+            process.wait(timeout=5)
+            return False
+        finally:
+            if self.process is not process:
+                process.close_handle()
 
     def request(self, kind, timeout=10, expected_instance=None, **fields):
         with self._rpc_lock:
@@ -406,5 +462,7 @@ class NativeRecorder:
             except subprocess.TimeoutExpired:
                 self.process.kill()
                 self.process.wait()
+        if self.process and hasattr(self.process, "close_handle"):
+            self.process.close_handle()
         if self._log:
             self._log.close()

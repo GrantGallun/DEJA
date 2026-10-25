@@ -27,4 +27,4 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - run: node --test tests/demo_ui.test.cjs
+      - run: node --test tests/demo_ui.test.cjs tests/frontend_status.test.cjs tests/recordings_ui.test.cjs
