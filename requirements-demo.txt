@@ -1,4 +1,4 @@
 -r requirements.txt
 imageio-ffmpeg>=0.6
-anthropic>=0.40
+anthropic>=2.1.0
 faster-whisper>=1.1
