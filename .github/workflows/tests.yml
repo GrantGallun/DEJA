@@ -24,7 +24,7 @@ jobs:
       # No footage, native player build or model sign-in on a runner.
       # Tests that need them skip and print why (-rs); everything else must pass.
       - run: python -m pytest -q -rfEs
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
       - run: node --test tests/demo_ui.test.cjs
