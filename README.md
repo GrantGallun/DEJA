@@ -1,6 +1,32 @@
-# Smart Replay — HUD event discovery
+# Deja — Smart Replay
 
-This is the adaptability spike for Smart Replay. It answers one question
+[![tests](https://github.com/GrantGallun/DEJA/actions/workflows/tests.yml/badge.svg)](https://github.com/GrantGallun/DEJA/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+
+Ask for a moment of your game session ("the round I died to the sniper") and watch it again, on any
+game, with no per-game setup. Deja records the session, finds the moment from the game's own HUD,
+speech and a model's reading of the request, and replays it in a mini-player over the game.
+
+## Quick start
+
+Windows 10 or 11, Python 3.11 or newer:
+
+```bash
+git clone https://github.com/GrantGallun/DEJA.git
+cd DEJA
+python -m pip install -r requirements-demo.txt pytest
+python -m pytest -q -rs
+```
+
+`requirements.txt` alone runs the discovery pipeline; the demo's packages are needed for the full
+suite. The suite needs no footage, game or model sign-in. Then run the discovery pipeline on a clip
+([Usage](#usage)), open the [replay player settings](#replay-player-settings), or run the
+[Stick Fight demo](#fresh-stick-fight-demo).
+
+## HUD event discovery
+
+This began as the adaptability spike for Smart Replay. It answers one question
 before any Windows plumbing gets written:
 
 > Can a game's event vocabulary — death, kill, round start — be discovered
@@ -72,15 +98,20 @@ Files: `hud_map.png`, `group_NN.png`,
 `events.json`, `profile_draft.json`, `templates.npz`, plus the sampled stacks.
 `out/index.md` summarises a batch.
 
+## Fresh Stick Fight demo
+
+Run `./Run-Demo.ps1` for **native full-session recording -> ask while recording continues -> replay the matching moment** at <http://127.0.0.1:8766>. Full sessions stay on disk, the native player has a bounded RAM cache, and a sampled background index helps find older moments. It supports online keyboard/mouse play and local play with a controller. Codex is the default connection; Claude is selectable. See [docs/STICK_FIGHT_DEMO.md](docs/STICK_FIGHT_DEMO.md) for setup, limits and rehearsal instructions.
+
 ## Replay player settings
 
 ```bash
 python -m smartreplay.frontend      # settings app in the browser (standard library only)
+./Install-Deja.ps1                  # or as "deja", a desktop app with its own taskbar icon (needs pywebview)
 ```
 
 A local page for the replay player's hotkeys and in-player keys, its input
 mode (keyboard only, mouse only, or both), size and position, theme and
-opacity, and which buttons it shows, with a live preview. It writes
+opacity, and which buttons it shows, with a live preview over your own recorded footage. It writes
 `%APPDATA%\SmartReplay\player-settings.json`; a running player applies each
 save immediately and reports back, including any hotkey Windows refused.
 [docs/PLAYER_SETTINGS.md](docs/PLAYER_SETTINGS.md) describes the file.
@@ -175,7 +206,7 @@ status bar (46,357 px of a 52,480 px bar). No false positives on real footage.
 ## Tests
 
 ```bash
-pip install -r requirements.txt pytest
+pip install -r requirements-demo.txt pytest
 python -m pytest tests                       # fast unit + regression suite
 RUN_SLOW=1 python -m pytest tests            # adds the synthetic end-to-end run
 ```
@@ -199,9 +230,20 @@ python tools/verify.py footage/doom.negative.json out/doom
 ```
 smartreplay/     sampling, discovery, grouping, variants, report, profile, cli
   player_settings.py  replay player settings: schema, validation, file I/O
-  frontend/           settings app (local server + static page)
+  frontend/           settings app (local server + static page, deja window)
+  demo/               native session recording, search and replay demo
 tools/           make_test_clip, vizdoom_substrate, minecraft_truth, verify, lookup_eval
 tests/           pytest suite (regressions from the audit, synthetic end-to-end)
 footage/         input clips
 out/             results, one directory per clip
 ```
+
+## Contributing
+
+Issues and small pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers setup, the
+tests and the rules a change has to follow. Please read the [code of conduct](CODE_OF_CONDUCT.md),
+and report security problems privately as described in [SECURITY.md](SECURITY.md).
+
+## License
+
+[MIT](LICENSE) © Grant Gallun

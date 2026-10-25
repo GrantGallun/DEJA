@@ -1,0 +1,30 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pytest:
+    # The player host, the deja window and the demo's capture are Windows-only.
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-demo.txt
+      - run: python -m pip install -r requirements-demo.txt pytest
+      # Lint rules live in pyproject.toml: errors that break code, not style.
+      - run: python -m pip install ruff==0.17.2 && ruff check
+      # No footage, native player build or model sign-in on a runner.
+      # Tests that need them skip and print why (-rs); everything else must pass.
+      - run: python -m pytest -q -rfEs
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: node --test tests/demo_ui.test.cjs

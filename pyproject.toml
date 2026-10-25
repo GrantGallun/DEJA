@@ -1,0 +1,43 @@
+# The dependency manifest, plus test and lint configuration. The pins themselves live in requirements.txt
+# (discovery pipeline) and requirements-demo.txt (adds the demo's capture, model and speech packages);
+# this file reads the first, so there is one list to keep. The code runs from the repository
+# (`python -m smartreplay.cli`, `python -m smartreplay.frontend`), not as an installed package.
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deja"
+version = "0.1.0"
+description = "Smart Replay: find and replay any moment of a game session by asking for it, with no per-game setup"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Grant Gallun" }]
+requires-python = ">=3.11"
+dynamic = ["dependencies"]
+
+[project.urls]
+Repository = "https://github.com/GrantGallun/DEJA"
+Issues = "https://github.com/GrantGallun/DEJA/issues"
+
+[tool.setuptools]
+packages = []
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+# `python -m pytest` from the repository root. experiments/ holds separate checkouts (GameHQ and its
+# bundled toolchains), whose own test files are not this project's.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+extend-exclude = ["experiments", "out", "footage", "audit/snapshot"]
+
+[tool.ruff.lint]
+# Errors that break code: syntax errors, invalid comparisons, undefined names (flake8's E9,F63,F7,F82).
+# Style is not enforced. CI runs `ruff check`.
+select = ["E9", "F63", "F7", "F82"]
