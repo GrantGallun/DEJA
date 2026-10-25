@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180">
+  <!-- A stand-in gameplay frame (16:9) for previewing video fit. -->
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4f7fb3"/>
+      <stop offset="1" stop-color="#b7c9d6"/>
+    </linearGradient>
+    <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5a6b3a"/>
+      <stop offset="1" stop-color="#2f3a20"/>
+    </linearGradient>
+  </defs>
+  <rect width="320" height="180" fill="url(#sky)"/>
+  <path d="M0 110 60 70l40 25 50-40 60 45 45-30 65 40v70H0z" fill="#6d7f8f"/>
+  <path d="M0 125h320v55H0z" fill="url(#ground)"/>
+  <path d="M150 180 170 125h-20z" fill="#7a6a48" opacity=".6"/>
+  <circle cx="160" cy="90" r="3" fill="none" stroke="#fff" stroke-width="1.2"/>
+  <rect x="10" y="152" width="70" height="8" rx="2" fill="#000" opacity=".45"/>
+  <rect x="12" y="154" width="48" height="4" rx="1" fill="#e5534b"/>
+  <rect x="250" y="10" width="60" height="22" rx="2" fill="#000" opacity=".4"/>
+  <text x="280" y="25" font-family="Segoe UI, sans-serif" font-size="10" fill="#fff" text-anchor="middle">12 : 4</text>
+</svg>

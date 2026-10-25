@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart Replay Settings</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="app.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to settings</a>
+
+<header class="topbar">
+  <div class="brand">
+    <img src="icon.svg" alt="" width="22" height="22">
+    <div>
+      <div class="brand-name">Smart Replay</div>
+      <div class="brand-sub">Replay player settings</div>
+    </div>
+  </div>
+  <div class="player-status" id="player-status" role="status" aria-live="polite">
+    <span class="dot"></span><span class="label">Checking player…</span>
+  </div>
+  <div class="actions">
+    <span class="dirty" id="dirty" hidden>Unsaved changes</span>
+    <button type="button" class="btn ghost" id="revert" disabled>Revert</button>
+    <button type="button" class="btn primary" id="save" disabled>
+      Save <kbd>Ctrl</kbd><kbd>S</kbd>
+    </button>
+  </div>
+</header>
+
+<div class="layout">
+  <nav class="sidenav" aria-label="Sections">
+    <a href="#focus">Controls &amp; focus</a>
+    <a href="#hotkeys">Hotkeys</a>
+    <a href="#size">Size &amp; position</a>
+    <a href="#look">Appearance</a>
+    <a href="#buttons">Buttons</a>
+    <div class="sidenav-foot">
+      <button type="button" class="btn ghost small" id="reset-all">Reset everything</button>
+      <p class="file" id="file-path"></p>
+    </div>
+  </nav>
+
+  <main id="main" tabindex="-1">
+    <div class="banner error" id="load-error" hidden></div>
+
+    <!-- ============================================================ focus -->
+    <section id="focus" aria-labelledby="focus-h">
+      <div class="section-head">
+        <h2 id="focus-h">Controls &amp; focus</h2>
+        <button type="button" class="link" data-reset="input">Reset section</button>
+      </div>
+      <p class="lede">The replay opens <em>passive</em>: on top of the game, with the game still taking
+        your input. Pick how you take control of the player and give it back.</p>
+
+      <fieldset class="mode-cards" data-path="input.mode">
+        <legend class="sr-only">Input mode</legend>
+        <label class="mode-card">
+          <input type="radio" name="input-mode" value="keyboard">
+          <span class="mode-icon" aria-hidden="true">
+            <svg viewBox="0 0 32 32"><rect x="3" y="8" width="26" height="16" rx="3"/><path d="M8 13h2M13 13h2M18 13h2M23 13h2M8 18h16"/></svg>
+          </span>
+          <span class="mode-title">Keyboard only</span>
+          <span class="mode-desc">The mouse never touches the player. Clicks always go through to the game.</span>
+        </label>
+        <label class="mode-card">
+          <input type="radio" name="input-mode" value="mouse">
+          <span class="mode-icon" aria-hidden="true">
+            <svg viewBox="0 0 32 32"><rect x="9" y="4" width="14" height="24" rx="7"/><path d="M16 4v8M9 12h14"/></svg>
+          </span>
+          <span class="mode-title">Mouse only</span>
+          <span class="mode-desc">Click the player to take control, click the game to give it back. Player keys are off.</span>
+        </label>
+        <label class="mode-card">
+          <input type="radio" name="input-mode" value="hybrid">
+          <span class="mode-icon" aria-hidden="true">
+            <svg viewBox="0 0 32 32"><rect x="2" y="12" width="17" height="12" rx="2.5"/><path d="M6 16h1.5M10 16h1.5M14 16h1.5M6 20h9"/><rect x="21" y="7" width="9" height="16" rx="4.5"/><path d="M25.5 7v5"/></svg>
+          </span>
+          <span class="mode-title">Keyboard + mouse</span>
+          <span class="mode-desc">A hotkey takes control; then keys and mouse both work. The default.</span>
+        </label>
+      </fieldset>
+
+      <div class="behaviour" id="behaviour" aria-live="polite"></div>
+
+      <div class="field">
+        <label for="seek-step">Seek step</label>
+        <div class="range-row">
+          <input type="range" id="seek-step" min="1" max="60" step="1" data-path="input.seek_step_s">
+          <output for="seek-step" id="seek-step-out"></output>
+        </div>
+        <p class="hint">How far the seek buttons and seek keys jump.</p>
+      </div>
+    </section>
+
+    <!-- ============================================================ hotkeys -->
+    <section id="hotkeys" aria-labelledby="hotkeys-h">
+      <div class="section-head">
+        <h2 id="hotkeys-h">Hotkeys</h2>
+        <button type="button" class="link" data-reset="hotkeys,player_keys">Reset section</button>
+      </div>
+      <p class="lede">Select a shortcut and press the new keys. <kbd>Tab</kbd> cancels;
+        the <span class="icon-inline">✕</span> button unbinds.</p>
+
+      <h3>Global hotkeys</h3>
+      <p class="hint">Work everywhere, even while the game has focus. They need <kbd>Ctrl</kbd>,
+        <kbd>Alt</kbd> or <kbd>Shift</kbd> plus a letter, digit or F-key.</p>
+      <div class="keylist" id="global-keys"></div>
+
+      <h3>Player keys</h3>
+      <p class="hint" id="player-keys-hint">Work only while the player has controls, so plain keys are fine.</p>
+      <div class="banner info" id="mouse-keys-off" hidden>Mouse only mode turns player keys off. They are kept for when you switch back.</div>
+      <div class="keylist" id="player-keys"></div>
+    </section>
+
+    <!-- ============================================================ size -->
+    <section id="size" aria-labelledby="size-h">
+      <div class="section-head">
+        <h2 id="size-h">Size &amp; position</h2>
+        <button type="button" class="link" data-reset="layout">Reset section</button>
+      </div>
+      <p class="lede">Where the player first appears. You can still drag and resize it while it has
+        controls (not in Keyboard only mode); that lasts until the player restarts or these settings change.</p>
+
+      <div class="field">
+        <span class="label" id="size-presets-l">Size</span>
+        <div class="chips" role="group" aria-labelledby="size-presets-l" id="size-presets"></div>
+        <div class="pair">
+          <label>Width <input type="number" id="width" min="320" max="1920" step="1" data-path="layout.width"> px</label>
+          <label>Height <input type="number" id="height" min="200" max="1200" step="1" data-path="layout.height"> px</label>
+        </div>
+      </div>
+
+      <div class="field split">
+        <div>
+          <span class="label" id="anchor-l">Position on screen</span>
+          <div class="anchor-grid" role="radiogroup" aria-labelledby="anchor-l" id="anchor-grid"></div>
+        </div>
+        <div class="stack">
+          <label>Distance from the side <span class="num"><input type="number" min="0" max="400" data-path="layout.margin_x"> px</span></label>
+          <label>Distance from the top or bottom <span class="num"><input type="number" min="0" max="400" data-path="layout.margin_y"> px</span></label>
+          <label>Screen
+            <select data-path="layout.screen">
+              <option value="game">The game's screen</option>
+              <option value="cursor">The screen with the mouse cursor</option>
+              <option value="primary">The primary screen</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div class="field">
+        <span class="label" id="fill-l">Video fit</span>
+        <div class="segmented" role="radiogroup" aria-labelledby="fill-l" data-path="layout.fill">
+          <label><input type="radio" name="fill" value="fit"><span>Fit</span></label>
+          <label><input type="radio" name="fill" value="crop"><span>Fill and crop</span></label>
+          <label><input type="radio" name="fill" value="stretch"><span>Stretch</span></label>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ look -->
+    <section id="look" aria-labelledby="look-h">
+      <div class="section-head">
+        <h2 id="look-h">Appearance</h2>
+        <button type="button" class="link" data-reset="appearance">Reset section</button>
+      </div>
+
+      <div class="field">
+        <span class="label" id="theme-l">Theme</span>
+        <div class="themes" role="radiogroup" aria-labelledby="theme-l" id="themes"></div>
+      </div>
+
+      <details class="field colours">
+        <summary>Colours</summary>
+        <div class="colour-grid" id="colours"></div>
+      </details>
+
+      <div class="field">
+        <span class="label" id="layout-l">Controls</span>
+        <div class="segmented" role="radiogroup" aria-labelledby="layout-l" data-path="appearance.controls">
+          <label><input type="radio" name="controls" value="full"><span>Full</span></label>
+          <label><input type="radio" name="controls" value="compact"><span>Compact</span></label>
+          <label><input type="radio" name="controls" value="timeline"><span>Timeline only</span></label>
+          <label><input type="radio" name="controls" value="none"><span>Video only</span></label>
+        </div>
+      </div>
+
+      <div class="field grid2">
+        <label for="op-passive">Opacity while passive
+          <span class="range-row"><input type="range" id="op-passive" min="0.2" max="1" step="0.05" data-path="appearance.passive_opacity"><output data-out="appearance.passive_opacity"></output></span>
+        </label>
+        <label for="op-active">Opacity with controls
+          <span class="range-row"><input type="range" id="op-active" min="0.2" max="1" step="0.05" data-path="appearance.active_opacity"><output data-out="appearance.active_opacity"></output></span>
+        </label>
+        <label for="font-scale">Text and button size
+          <span class="range-row"><input type="range" id="font-scale" min="0.75" max="1.5" step="0.05" data-path="appearance.font_scale"><output data-out="appearance.font_scale"></output></span>
+        </label>
+      </div>
+
+      <div class="field toggles">
+        <label class="toggle"><input type="checkbox" data-path="appearance.show_header"><span>Title bar</span><small>Shows whether the player is passive and which hotkey takes control.</small></label>
+        <label class="toggle"><input type="checkbox" data-path="appearance.show_status"><span>Status line</span><small>Time, player status and hotkey reminders (Full controls only).</small></label>
+        <label class="toggle"><input type="checkbox" data-path="appearance.show_key_hints"><span>Key legend</span><small>Lists the player keys over the video while the player has controls.</small></label>
+        <label class="toggle"><input type="checkbox" data-path="appearance.focus_outline"><span>Outline when in control</span><small>An accent border, so you can see where your keys are going.</small></label>
+      </div>
+    </section>
+
+    <!-- ============================================================ buttons -->
+    <section id="buttons" aria-labelledby="buttons-h">
+      <div class="section-head">
+        <h2 id="buttons-h">Buttons</h2>
+        <button type="button" class="link" data-reset="buttons">Reset section</button>
+      </div>
+      <p class="lede" id="buttons-lede">Shown in Full and Compact controls.</p>
+
+      <div class="field toggles cols">
+        <label class="toggle"><input type="checkbox" data-path="buttons.seek"><span>Seek back / forward</span></label>
+        <label class="toggle"><input type="checkbox" data-path="buttons.play_pause"><span>Play / pause</span></label>
+        <label class="toggle"><input type="checkbox" data-path="buttons.mute"><span>Mute</span></label>
+        <label class="toggle"><input type="checkbox" data-path="buttons.expand"><span>Expand to screen</span></label>
+        <label class="toggle"><input type="checkbox" data-path="buttons.close"><span>Close</span></label>
+      </div>
+
+      <div class="field">
+        <span class="label" id="speeds-l">Speed buttons</span>
+        <div class="chips" role="group" aria-labelledby="speeds-l" id="speeds"></div>
+        <p class="hint">The slower and faster keys step through these, or through every speed if none are picked.</p>
+      </div>
+
+      <div class="meter" id="row-meter"></div>
+    </section>
+
+    <div class="issues" id="issues" aria-live="polite"></div>
+  </main>
+
+  <!-- ============================================================ preview -->
+  <aside class="preview" aria-label="Preview">
+    <div class="preview-head">
+      <h2>Preview</h2>
+      <div class="segmented small" role="radiogroup" aria-label="Preview state" id="pv-state">
+        <label><input type="radio" name="pv-state" value="passive" checked><span>Passive</span></label>
+        <label><input type="radio" name="pv-state" value="controls"><span>In control</span></label>
+      </div>
+    </div>
+    <div class="pv-stage" id="pv-stage">
+      <div class="pv-scale" id="pv-scale">
+        <div class="pv-player" id="pv-player" aria-hidden="true"></div>
+      </div>
+    </div>
+    <p class="pv-caption" id="pv-caption"></p>
+
+    <h3 class="pv-sub">On screen</h3>
+    <div class="pv-screen" id="pv-screen" aria-hidden="true"><div class="pv-screen-player" id="pv-screen-player"></div></div>
+    <p class="pv-caption" id="pv-screen-caption"></p>
+  </aside>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

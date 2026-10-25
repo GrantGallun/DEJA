@@ -72,6 +72,19 @@ Files: `hud_map.png`, `group_NN.png`,
 `events.json`, `profile_draft.json`, `templates.npz`, plus the sampled stacks.
 `out/index.md` summarises a batch.
 
+## Replay player settings
+
+```bash
+python -m smartreplay.frontend      # settings app in the browser (standard library only)
+```
+
+A local page for the replay player's hotkeys and in-player keys, its input
+mode (keyboard only, mouse only, or both), size and position, theme and
+opacity, and which buttons it shows, with a live preview. It writes
+`%APPDATA%\SmartReplay\player-settings.json`; a running player applies each
+save immediately and reports back, including any hotkey Windows refused.
+[docs/PLAYER_SETTINGS.md](docs/PLAYER_SETTINGS.md) describes the file.
+
 ## Test substrates
 
 Ground truth without hand labelling, in order of realism:
@@ -185,6 +198,8 @@ python tools/verify.py footage/doom.negative.json out/doom
 
 ```
 smartreplay/     sampling, discovery, grouping, variants, report, profile, cli
+  player_settings.py  replay player settings: schema, validation, file I/O
+  frontend/           settings app (local server + static page)
 tools/           make_test_clip, vizdoom_substrate, minecraft_truth, verify, lookup_eval
 tests/           pytest suite (regressions from the audit, synthetic end-to-end)
 footage/         input clips

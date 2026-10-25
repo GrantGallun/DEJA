@@ -2,6 +2,7 @@
 
     python -m smartreplay.cli discover footage/cs2.mp4
     python -m smartreplay.cli batch footage/ --out out/
+    python -m smartreplay.cli settings            # replay player settings app
 
 Each run leaves a self-contained directory: the sampled stacks, the pixel
 classification, events.json, a draft profile with templates, a HUD map and one
@@ -326,9 +327,18 @@ def main(argv=None) -> int:
     b.add_argument("folder")
     _add_common(b)
 
+    st = sub.add_parser("settings", help="open the replay player settings app")
+    st.add_argument("--file", default=None,
+                    help="settings file (default: %%APPDATA%%/SmartReplay/player-settings.json)")
+    st.add_argument("--port", type=int, default=8765)
+    st.add_argument("--no-browser", action="store_true", help="print the URL instead of opening it")
+
     args = ap.parse_args(argv)
     if args.cmd == "lookup":
         return run_lookup(args)
+    if args.cmd == "settings":
+        from .frontend.server import serve
+        return serve(args.file, args.port, open_browser=not args.no_browser)
 
     out_root = Path(args.out)
     out_root.mkdir(parents=True, exist_ok=True)

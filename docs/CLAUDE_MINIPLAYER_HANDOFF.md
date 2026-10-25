@@ -13,7 +13,9 @@ Smart Replay's main repository is `C:\Code\HACKTX`. The working miniplayer proto
 | Ctrl+Alt+Shift+R | Exit the experiment. In the main app, use the normal application shutdown path. |
 | Space and Left/Right, while interactive | Pause/play and seek five seconds within the selected interval. |
 
-Keep these letter chords as the defaults. The user's laptop toggles airplane mode on F8. Legacy F8/F9 bindings exist only behind `--function-keys`; the on-screen hints derive from the selected bindings.
+Keep these letter chords as the defaults. The user's laptop toggles airplane mode on F8. Legacy F8/F9 bindings exist only behind `--function-keys`; the on-screen hints derive from the registered bindings.
+
+**User settings (added 2026-10-24).** Every chord above, the in-player keys, an input mode (keyboard only, mouse only, or the original hybrid), size and placement, colours, opacity and visible buttons now come from `%APPDATA%\SmartReplay\player-settings.json`, edited with `python -m smartreplay.frontend` ([PLAYER_SETTINGS.md](PLAYER_SETTINGS.md)). The experiment reads it through `spike/passive-replay/PlayerSettings.cpp`, applies saves live, and reports registration results in `player-status.json`. Defaults reproduce the behaviour above; the `--benchmark` and `--verify-catchup` modes ignore the user's file. Startup now exits with code 6 only when the show/hide hotkey cannot be registered.
 
 Normal launch now uses live capture. Once GameHQ detects an eligible foreground game, it records automatically. Opening review plays the latest 30 seconds, or the available history while the buffer warms up. Capture continues against the original game while review is preparing, passive, paused, or focused.
 
@@ -94,6 +96,8 @@ Last verified integration run on 2026-10-24 (17:41–17:44, after the decoder-te
 - Dry-run launch checks covered default live mode, explicit file paths containing spaces, and full-app routing. QML lint exited successfully with context-property warnings.
 - A read-only follow-up review found the duration-retention issue resolved.
 
+After the settings change (2026-10-24, 19:29–19:33): both builds rebuilt; the five suites plus the new `player_settings` suite passed (38.65 seconds). `player_settings` covers per-field fallback, canonical chords and keys, placement for each anchor, live reload across repeated atomic replaces, keeping the last good settings when the file is corrupt, the status file, and `ReplayWindow.qml` following each setting offscreen (`REPLAY_SNAPSHOT_DIR` saves PNGs of the rendered player). Live hotkey re-registration, mouse-mode click-to-take-controls, opacity and placement on a real desktop are not yet exercised.
+
 Evidence is in [out-passive-verify.log](C:/Code/HACKTX/experiments/gamehq-passive/out-passive-verify.log) (UTF-16), [LastTest.log](C:/Code/HACKTX/experiments/gamehq-passive/out-passive/Testing/Temporary/LastTest.log), [retention-red.txt](C:/Code/HACKTX/experiments/gamehq-passive/out-passive/retention-red.txt), and [retention-green.txt](C:/Code/HACKTX/experiments/gamehq-passive/out-passive/retention-green.txt). These are local build artifacts, not committed evidence.
 
 **Decoder teardown is reconciled.** [ReplayWindow.qml](C:/Code/HACKTX/experiments/gamehq-passive/spike/passive-replay/ReplayWindow.qml) no longer keeps a persistent `MediaPlayer`; `ReplayMediaSession` creates the player and audio output per replay and retires them with a deferred delete, so closing from inside a playback or end-of-media signal is safe. Its `disposed(source)` signal calls `ReplayController::mediaReleased`, which is the point where the temporary MP4 may be released. Both builds compile the class.
@@ -107,7 +111,7 @@ $replayRoot = 'C:\Code\HACKTX\experiments\gamehq-passive'
 & "$replayRoot\spike\passive-replay\build.ps1"
 & "$replayRoot\spike\passive-replay\build.ps1" -FullApp
 $env:PATH = "$replayRoot\tools\Qt\Tools\mingw1310_64\bin;$replayRoot\tools\Qt\6.8.3\mingw_64\bin;$env:PATH"
-& "$replayRoot\.tooling\python\cmake\data\bin\ctest.exe" --test-dir "$replayRoot\out-passive" -R '^(temporary_replay|replay_owners|recorder_snapshots|live_replay|replay_media)$' --output-on-failure
+& "$replayRoot\.tooling\python\cmake\data\bin\ctest.exe" --test-dir "$replayRoot\out-passive" -R '^(temporary_replay|replay_owners|recorder_snapshots|live_replay|replay_media|player_settings)$' --output-on-failure
 & "$replayRoot\spike\passive-replay\launch.ps1" -PrintCommand
 & "$replayRoot\spike\passive-replay\launch.ps1" -FullApp -PrintCommand
 ```
