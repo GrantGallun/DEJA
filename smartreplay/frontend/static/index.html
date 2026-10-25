@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Smart Replay Settings</title>
+<meta name="theme-color" content="#0e0c14">
+<title>deja</title>
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="app.css">
 <script src="app.js" defer></script>
@@ -13,11 +14,8 @@
 
 <header class="topbar">
   <div class="brand">
-    <img src="icon.svg" alt="" width="22" height="22">
-    <div>
-      <div class="brand-name">Smart Replay</div>
-      <div class="brand-sub">Replay player settings</div>
-    </div>
+    <img class="logo" src="logo.svg" alt="deja" width="96" height="28">
+    <div class="brand-sub">Replay player settings</div>
   </div>
   <div class="player-status" id="player-status" role="status" aria-live="polite">
     <span class="dot"></span><span class="label">Checking player…</span>
@@ -33,11 +31,12 @@
 
 <div class="layout">
   <nav class="sidenav" aria-label="Sections">
-    <a href="#focus">Controls &amp; focus</a>
+    <a href="#focus">Controls &amp; playback</a>
     <a href="#hotkeys">Hotkeys</a>
     <a href="#size">Size &amp; position</a>
     <a href="#look">Appearance</a>
     <a href="#buttons">Buttons</a>
+    <a href="#model">AI model</a>
     <div class="sidenav-foot">
       <button type="button" class="btn ghost small" id="reset-all">Reset everything</button>
       <p class="file" id="file-path"></p>
@@ -50,11 +49,15 @@
     <!-- ============================================================ focus -->
     <section id="focus" aria-labelledby="focus-h">
       <div class="section-head">
-        <h2 id="focus-h">Controls &amp; focus</h2>
-        <button type="button" class="link" data-reset="input">Reset section</button>
+        <h2 id="focus-h">Controls &amp; playback</h2>
+        <button type="button" class="link" data-reset="input,playback">Reset section</button>
       </div>
-      <p class="lede">The replay opens <em>passive</em>: on top of the game, with the game still taking
-        your input. Pick how you take control of the player and give it back.</p>
+      <p class="lede">Choose how the replay takes your controls and gives them back. The game stays
+        fullscreen and in the foreground.</p>
+      <div class="field">
+        <label><input type="checkbox" data-path="input.take_controls_on_open"> Take controls when a quick replay opens</label>
+        <p class="hint">Turn off to open passively and keep playing. The controls shortcut can summon the hidden player and take controls either way.</p>
+      </div>
 
       <fieldset class="mode-cards" data-path="input.mode">
         <legend class="sr-only">Input mode</legend>
@@ -64,7 +67,7 @@
             <svg viewBox="0 0 32 32"><rect x="3" y="8" width="26" height="16" rx="3"/><path d="M8 13h2M13 13h2M18 13h2M23 13h2M8 18h16"/></svg>
           </span>
           <span class="mode-title">Keyboard only</span>
-          <span class="mode-desc">The mouse never touches the player. Clicks always go through to the game.</span>
+          <span class="mode-desc">Use keys for playback. Click outside the player to return game input.</span>
         </label>
         <label class="mode-card">
           <input type="radio" name="input-mode" value="mouse">
@@ -94,6 +97,14 @@
         </div>
         <p class="hint">How far the seek buttons and seek keys jump.</p>
       </div>
+      <div class="field">
+        <label for="replay-start">Start behind live</label>
+        <div class="range-row">
+          <input type="number" id="replay-start" min="1" max="300" step="1" data-path="playback.start_behind_live_s">
+          <span>seconds</span>
+        </div>
+        <p class="hint">Where a quick replay starts. Press the full history key in the player to reach older footage.</p>
+      </div>
     </section>
 
     <!-- ============================================================ hotkeys -->
@@ -106,7 +117,7 @@
         the <span class="icon-inline">✕</span> button unbinds.</p>
 
       <h3>Global hotkeys</h3>
-      <p class="hint">Work everywhere, even while the game has focus. They need <kbd>Ctrl</kbd>,
+      <p class="hint">Work everywhere, even while the game has focus. Use a number-row digit, or <kbd>Ctrl</kbd>,
         <kbd>Alt</kbd> or <kbd>Shift</kbd> plus a letter, digit or F-key.</p>
       <div class="keylist" id="global-keys"></div>
 
@@ -182,6 +193,7 @@
       <div class="field">
         <span class="label" id="layout-l">Controls</span>
         <div class="segmented" role="radiogroup" aria-labelledby="layout-l" data-path="appearance.controls">
+          <label><input type="radio" name="controls" value="minimal"><span>Minimal</span></label>
           <label><input type="radio" name="controls" value="full"><span>Full</span></label>
           <label><input type="radio" name="controls" value="compact"><span>Compact</span></label>
           <label><input type="radio" name="controls" value="timeline"><span>Timeline only</span></label>
@@ -232,6 +244,36 @@
       </div>
 
       <div class="meter" id="row-meter"></div>
+    </section>
+
+    <!-- ============================================================ model -->
+    <section id="model" aria-labelledby="model-h">
+      <div class="section-head">
+        <h2 id="model-h">AI model</h2>
+        <button type="button" class="link" data-reset="model">Reset section</button>
+      </div>
+      <p class="lede">Which model finds the moment you ask about. The replay service switches as soon as you
+        save and checks the connection, so if one is blocked on your network, pick another.</p>
+
+      <fieldset class="mode-cards" data-path="model.provider">
+        <legend class="sr-only">Model provider</legend>
+        <label class="mode-card">
+          <input type="radio" name="provider" value="codex">
+          <span class="mode-title">Codex</span>
+          <span class="mode-desc">Uses your Codex sign-in. The default.</span>
+        </label>
+        <label class="mode-card">
+          <input type="radio" name="provider" value="claude">
+          <span class="mode-title">Claude</span>
+          <span class="mode-desc">Uses your Claude Code sign-in, or ANTHROPIC_API_KEY.</span>
+        </label>
+        <label class="mode-card">
+          <input type="radio" name="provider" value="deepseek">
+          <span class="mode-title">DeepSeek</span>
+          <span class="mode-desc">Fastest in testing, about twice as quick. Some networks, like campus Wi-Fi, block it.</span>
+        </label>
+      </fieldset>
+      <div class="banner" id="provider-note" hidden></div>
     </section>
 
     <div class="issues" id="issues" aria-live="polite"></div>

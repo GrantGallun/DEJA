@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Smart Replay · Stick Fight</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/"><span class="brand-mark">↶</span> SMART REPLAY</a>
+    <span class="demo-label">STICK FIGHT · LIVE DEMO</span>
+    <span class="local-label"><i></i> On this computer</span>
+  </header>
+  <main>
+    <section class="intro">
+      <p class="eyebrow">YOU PLAY. WE FIND THE MOMENT.</p>
+      <h1>Your match.<br><span>Your instant replay.</span></h1>
+      <p class="subtitle">Play a quick round. Describe something that happened.<br>Jump straight back to it.</p>
+    </section>
+    <section class="workspace">
+      <div class="controls">
+        <section class="step capture-step">
+          <div class="step-heading"><span class="step-number">01</span><h2>Record the session</h2><span id="gameBadge" class="badge">Checking game</span></div>
+          <p>Start once. Full sessions stay on disk while you play and ask.</p>
+          <div class="button-row"><button id="record" class="primary">● Start native recording</button><button id="stop" class="secondary" hidden>Stop recording</button></div>
+          <button id="launch" class="text-button">Open Stick Fight ↗</button>
+          <div id="recordProgress" class="progress" hidden><div id="recordFill"></div></div>
+          <p id="captureNote" class="small">Start recording, then switch to your game. It keeps recording when you return here.</p>
+          <p id="cacheNote" class="small">Replay cache: capped at 128 MiB.</p>
+          <label for="sessionPicker" class="session-label">Recording session</label>
+          <select id="sessionPicker" disabled><option value="">No recorded session yet</option></select>
+        </section>
+        <section class="step">
+          <div class="step-heading"><span class="step-number">02</span><h2>Ask about your match</h2></div>
+          <div id="voiceStatus" class="voice-status" role="status" aria-live="polite" data-state="idle">
+            <strong id="voiceTitle">Push to talk</strong>
+            <p id="voiceMessage">Hold your configured shortcut in the game, ask, then release. Default: 9.</p>
+            <p id="voiceTranscript" class="voice-transcript" hidden></p>
+            <p id="voiceModel" class="small" hidden></p>
+          </div>
+          <form id="questionForm">
+            <div class="scope-row"><label for="searchScope">Look in</label><select id="searchScope"><option value="session">Session · indexed moments</option><option value="recent">Latest 25 seconds</option><option value="window">An earlier timestamp</option></select></div>
+            <div id="windowControls" hidden><label for="windowStart">Start at session second</label><input id="windowStart" type="number" min="0" step="1" value="0"><p class="small">Checks a 25-second window from this point.</p></div>
+            <p id="indexNote" class="small">Recent footage can be searched directly. Older footage is indexed progressively.</p>
+            <label for="question">What do you want to see again?</label>
+            <textarea id="question" rows="3" maxlength="800" placeholder="Show the last time yellow died" disabled></textarea>
+            <div class="suggestions"><button type="button" data-question="Show the last elimination">Last elimination</button><button type="button" data-question="Show when a player fell off the map">A fall</button><button type="button" data-question="Show the last round ending">Round ending</button></div>
+            <button id="ask" class="primary" type="submit" disabled>Find my moment <span>↗</span></button>
+          </form>
+          <p class="small">Describe a visible event. Unclear moments are labelled so.</p>
+        </section>
+        <div class="connection"><span id="modelDot" class="dot"></span><div><label for="backend">Model connection</label><select id="backend"><option value="codex">Codex · fast</option><option value="claude">Claude</option><option value="deepseek">DeepSeek · fastest</option></select><strong id="modelTitle">Model connection</strong><p id="modelMessage">Checking readiness…</p></div><button id="checkModel" class="text-button">Check</button></div>
+      </div>
+      <section class="replay-panel">
+        <div class="panel-heading"><div><span class="step-number">03</span><h2>See it again</h2></div><span id="matchLabel" class="badge">No match yet</span></div>
+        <div class="video-stage">
+          <video id="player" controls playsinline preload="metadata" hidden></video>
+          <div id="emptyState"><span class="play-symbol">▶</span><h3>The next highlight is yours.</h3><p>Your fresh recording will appear here.</p></div>
+        </div>
+        <div class="replay-toolbar"><span id="clipLabel">Record a session to begin</span><button id="wholeMatch" class="text-button" disabled>Watch this window</button><button id="fullSession" class="text-button" disabled>Full session ↗</button></div>
+        <div id="status" class="status" role="status" aria-live="polite">Ready when you are.</div>
+        <div id="error" class="error" role="alert" hidden></div>
+        <div id="results" class="results"></div>
+      </section>
+    </section>
+    <footer><span>Fresh footage. A question you choose. Evidence you can replay.</span><span>3 minutes to make it memorable.</span></footer>
+  </main>
+</body>
+</html>

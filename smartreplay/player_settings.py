@@ -2,7 +2,8 @@
 
 One JSON document holds everything a user can change about the replay player:
 global hotkeys, the keys that work while the player has controls, which input
-device drives it, its size and placement, its look, and which buttons it shows.
+device drives it, its size and placement, its look, and which buttons it shows;
+plus the model provider, which only the demo service reads (HOST_ONLY).
 
     %APPDATA%\\SmartReplay\\player-settings.json     (SMARTREPLAY_SETTINGS overrides)
 
@@ -28,6 +29,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from .providers import PROVIDERS
+
 VERSION = 1
 
 THEMES = {
@@ -37,6 +40,9 @@ THEMES = {
     "midnight": {"background": "#05070a", "panel": "#0d1117", "header": "#0d1117",
                  "header_active": "#10283a", "text": "#e6edf3", "muted": "#8b98a5",
                  "accent": "#58a6ff"},
+    "violet": {"background": "#0e0c14", "panel": "#17131f", "header": "#1b1626",
+               "header_active": "#33205a", "text": "#ece8f6", "muted": "#a99dc4",
+               "accent": "#a78bfa"},
     "ember": {"background": "#140f0d", "panel": "#1e1714", "header": "#241a16",
               "header_active": "#4a2414", "text": "#f3e6dd", "muted": "#b59c8f",
               "accent": "#ff8a3d"},
@@ -54,6 +60,7 @@ DEFAULTS = {
     "hotkeys": {
         "toggle_replay": "Ctrl+Alt+R",
         "toggle_controls": "Ctrl+Alt+F",
+        "push_to_talk": "9",
         "quit": "Ctrl+Alt+Shift+R",
     },
     "player_keys": {
@@ -66,9 +73,11 @@ DEFAULTS = {
         "mute": "M",
         "expand": "F",
         "restart": "Home",
+        "history": "H",
     },
-    "input": {"mode": "hybrid", "seek_step_s": 5},
-    "layout": {"width": 536, "height": 374, "anchor": "top_right",
+    "input": {"mode": "hybrid", "seek_step_s": 5, "take_controls_on_open": True},
+    "playback": {"start_behind_live_s": 5},
+    "layout": {"width": 536, "height": 302, "anchor": "top_right",
                "margin_x": 24, "margin_y": 24, "screen": "game", "fill": "fit"},
     "appearance": {
         "theme": "slate",
@@ -76,27 +85,32 @@ DEFAULTS = {
         "passive_opacity": 1.0,
         "active_opacity": 1.0,
         "font_scale": 1.0,
-        "show_header": True,
-        "controls": "full",
+        "show_header": False,
+        "controls": "minimal",
         "show_status": True,
         "show_key_hints": False,
         "focus_outline": True,
     },
     "buttons": {"seek": True, "play_pause": True, "mute": True, "expand": False,
                 "close": False, "speeds": [0.25, 0.5, 1, 1.5, 2]},
+    "model": {"provider": "codex"},
 }
+# Groups the replay player ignores: the demo service reads them from the same file.
+HOST_ONLY = ("model",)
 
 INPUT_MODES = ("hybrid", "keyboard", "mouse")
 ANCHORS = ("top_left", "top_center", "top_right", "middle_left", "center",
            "middle_right", "bottom_left", "bottom_center", "bottom_right")
 SCREENS = ("game", "cursor", "primary")
 FILLS = ("fit", "crop", "stretch")
-CONTROLS = ("full", "compact", "timeline", "none")
+# "minimal" lays a thin timeline over the video instead of a panel beneath it.
+CONTROLS = ("minimal", "full", "compact", "timeline", "none")
 SPEED_CHOICES = (0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4)
 
 # (min, max) for every number; ints stay ints.
 RANGES = {
     "input.seek_step_s": (1, 60),
+    "playback.start_behind_live_s": (1, 300),
     "layout.width": (320, 1920),
     "layout.height": (200, 1200),
     "layout.margin_x": (0, 400),
@@ -111,6 +125,7 @@ ENUMS = {
     "layout.screen": SCREENS,
     "layout.fill": FILLS,
     "appearance.controls": CONTROLS,
+    "model.provider": PROVIDERS,
 }
 
 # Chords other overlays ship as defaults. Registering one of them is allowed
@@ -141,11 +156,12 @@ PUNCTUATION = tuple(",./;'[]\\-=`")
 
 HOTKEY_LABELS = {"toggle_replay": "Show / hide replay",
                  "toggle_controls": "Take / return controls",
+                 "push_to_talk": "Hold to ask about gameplay",
                  "quit": "Quit player"}
 PLAYER_KEY_LABELS = {"play_pause": "Play / pause", "seek_back": "Seek back",
                      "seek_forward": "Seek forward", "close": "Close replay",
                      "speed_down": "Slower", "speed_up": "Faster", "mute": "Mute",
-                     "expand": "Expand to screen", "restart": "Jump to start"}
+                     "expand": "Expand to screen", "restart": "Jump to start", "history": "Full history"}
 
 
 def default_path() -> Path:
@@ -191,9 +207,9 @@ def _canonical_key(name: str) -> str | None:
 def parse_chord(text: str, *, global_hotkey: bool) -> tuple[str | None, str | None]:
     """Canonicalise one key chord. Returns (chord, None) or (None, reason).
 
-    Global hotkeys follow what the player registers with RegisterHotKey: at
-    least one of Ctrl/Alt/Shift plus a letter, digit or F1-F24, never the
-    Windows key, never Alt+F4. Player keys only fire while the player has
+    Global hotkeys follow what the player registers with RegisterHotKey:
+    a number-row digit, or Ctrl/Alt/Shift plus a letter, digit or F1-F24,
+    never the Windows key or Alt+F4. Player keys only fire while the player has
     controls, so a bare key such as Space is fine there.
     """
     parts = _split(text)
@@ -214,8 +230,8 @@ def parse_chord(text: str, *, global_hotkey: bool) -> tuple[str | None, str | No
     if key is None:
         return None, f'Unsupported key "{key_name}".'
     if global_hotkey:
-        if not seen:
-            return None, "A global hotkey needs Ctrl, Alt or Shift so it does not steal a key from the game."
+        if not seen and not (len(key) == 1 and key in "0123456789"):
+            return None, "Use a number-row digit, or add Ctrl, Alt or Shift to the key."
         if not (len(key) == 1 and key.isalnum()) and not re.fullmatch(r"F\d+", key):
             return None, "Global hotkeys use a letter, digit or F1-F24."
         if seen == {"Alt"} and key == "F4":
@@ -339,7 +355,7 @@ def normalize(raw) -> tuple[dict, list[dict]]:
     for path, options in ENUMS.items():
         if _get(out, path) not in options:
             reject(path, f"Must be one of: {', '.join(options)}.")
-    for group in ("appearance", "buttons"):
+    for group in ("appearance", "buttons", "input"):
         for key, default in fallback[group].items():
             if isinstance(default, bool) and not isinstance(out[group][key], bool):
                 reject(f"{group}.{key}", "Expected true or false.")
@@ -430,7 +446,7 @@ def normalize(raw) -> tuple[dict, list[dict]]:
     controls = out["appearance"]["controls"]
     b = out["buttons"]
     has_buttons = b["seek"] or b["play_pause"] or b["mute"] or b["speeds"]
-    if mode == "mouse" and (controls in ("none", "timeline") or not has_buttons):
+    if mode == "mouse" and (controls in ("none", "timeline", "minimal") or not has_buttons):
         _issue(issues, "warning", "appearance.controls",
                "Mouse mode with no on-screen buttons: only the timeline (or nothing) can be clicked.")
     if controls in ("full", "compact"):

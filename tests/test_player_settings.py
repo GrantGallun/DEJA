@@ -33,6 +33,8 @@ def _paths(issues, level="error"):
     ("alt+ctrl+r", "Ctrl+Alt+R"),
     ("Shift+Ctrl+Alt+f12", "Ctrl+Alt+Shift+F12"),
     ("Ctrl+7", "Ctrl+7"),
+    ("7", "7"),
+    ("8", "8"),
 ])
 def test_global_chords_are_canonical(text, chord):
     assert ps.parse_chord(text, global_hotkey=True) == (chord, None)
@@ -58,6 +60,68 @@ def test_defaults_are_clean():
     settings, issues = ps.normalize(ps.defaults())
     assert issues == []
     assert settings == ps.defaults()
+
+
+def test_push_to_talk_defaults_to_nine_and_can_be_unbound(tmp_path):
+    raw = ps.defaults()
+    assert raw["hotkeys"]["push_to_talk"] == "9"
+    raw["hotkeys"]["push_to_talk"] = ""
+    path = tmp_path / "settings.json"
+    ps.save(raw, path)
+    assert ps.load(path)[0]["hotkeys"]["push_to_talk"] == ""
+
+
+def test_push_to_talk_conflicts_are_rejected():
+    raw = ps.defaults()
+    raw["hotkeys"]["push_to_talk"] = raw["hotkeys"]["toggle_controls"]
+    assert "hotkeys.push_to_talk" in _paths(ps.normalize(raw)[1])
+
+
+def test_replay_takes_controls_on_open_by_default_and_can_be_disabled(tmp_path):
+    raw = ps.defaults()
+    assert raw["input"]["take_controls_on_open"] is True
+    raw["input"]["take_controls_on_open"] = False
+    path = tmp_path / "settings.json"
+    ps.save(raw, path)
+    assert ps.load(path)[0]["input"]["take_controls_on_open"] is False
+
+
+@pytest.mark.parametrize("value", [1, 0, "true", None])
+def test_replay_auto_controls_requires_boolean(value):
+    raw = ps.defaults()
+    raw["input"]["take_controls_on_open"] = value
+    clean, issues = ps.normalize(raw)
+    assert "input.take_controls_on_open" in _paths(issues)
+    assert clean["input"]["take_controls_on_open"] is True
+
+
+def test_recent_replay_start_defaults_and_persists(tmp_path):
+    raw = ps.defaults()
+    assert raw["playback"]["start_behind_live_s"] == 5
+    raw["playback"]["start_behind_live_s"] = 12
+    path = tmp_path / "settings.json"
+    ps.save(raw, path)
+    assert ps.load(path)[0]["playback"]["start_behind_live_s"] == 12
+
+
+@pytest.mark.parametrize("value", [0, -1, 301, 1.5, True, "5"])
+def test_recent_replay_start_rejects_invalid_values(value):
+    raw = ps.defaults()
+    raw["playback"] = {"start_behind_live_s": value}
+    settings, issues = ps.normalize(raw)
+    assert "playback.start_behind_live_s" in _paths(issues)
+    assert settings["playback"]["start_behind_live_s"] == 5
+
+
+def test_number_row_replay_shortcuts_round_trip(tmp_path):
+    raw = ps.defaults()
+    raw["hotkeys"]["toggle_replay"] = "7"
+    raw["hotkeys"]["toggle_controls"] = "8"
+    path = tmp_path / "player-settings.json"
+    saved, _ = ps.save(raw, path)
+    loaded, issues = ps.load(path)
+    assert _paths(issues) == []
+    assert loaded["hotkeys"] == saved["hotkeys"] == raw["hotkeys"]
 
 
 def test_bad_fields_fall_back_and_are_reported():
@@ -105,8 +169,24 @@ def test_editing_a_colour_makes_the_theme_custom():
     assert _paths(issues) == []
 
 
+def test_defaults_are_minimal():
+    settings = ps.defaults()
+    assert settings["appearance"]["controls"] == "minimal"
+    assert settings["appearance"]["show_header"] is False
+    assert settings["layout"]["width"] * 9 / 16 == pytest.approx(settings["layout"]["height"], abs=0.5)
+
+
+def test_minimal_controls_skip_the_button_width_check_but_warn_in_mouse_mode():
+    raw = ps.defaults()
+    raw["layout"]["width"] = 320                        # far too narrow for a button row
+    assert ps.normalize(raw)[1] == []
+    raw["input"]["mode"] = "mouse"
+    assert _paths(ps.normalize(raw)[1], "warning") == ["appearance.controls"]
+
+
 def test_clipped_buttons_and_unreadable_text_warn():
     raw = ps.defaults()
+    raw["appearance"]["controls"] = "full"
     raw["layout"]["width"] = 360
     raw["appearance"]["colors"]["text"] = raw["appearance"]["colors"]["panel"]
     _, issues = ps.normalize(raw)
@@ -165,7 +245,7 @@ def test_player_defaults_match():
     """The player falls back to its own copy of the defaults; keep them equal."""
     source = PLAYER_SETTINGS_CPP.read_text(encoding="utf-8")
     literal = re.search(r'kDefaults = R"\((.*?)\)";', source, re.S).group(1)
-    assert json.loads(literal) == ps.DEFAULTS
+    assert json.loads(literal) == {k: v for k, v in ps.DEFAULTS.items() if k not in ps.HOST_ONLY}
 
 
 # --------------------------------------------------------------------- server
@@ -211,6 +291,22 @@ def test_server_round_trip(server):
     assert on_disk["input"]["mode"] == "keyboard"
 
 
+def test_settings_page_and_api_expose_recent_start(server):
+    status, _, page = _request(server, "GET", "/")
+    assert status == 200 and b'data-path="playback.start_behind_live_s"' in page
+    assert b'data-path="input.take_controls_on_open"' in page
+    _, _, snapshot = _request(server, "GET", "/api/settings")
+    assert snapshot["defaults"]["playback"]["start_behind_live_s"] == 5
+    assert snapshot["defaults"]["input"]["take_controls_on_open"] is True
+    draft = snapshot["settings"]
+    draft["playback"]["start_behind_live_s"] = 9
+    draft["input"]["take_controls_on_open"] = False
+    status, _, saved = _request(server, "PUT", "/api/settings", draft)
+    assert status == 200 and saved["settings"]["playback"]["start_behind_live_s"] == 9
+    assert ps.load(server.settings_file)[0]["playback"]["start_behind_live_s"] == 9
+    assert ps.load(server.settings_file)[0]["input"]["take_controls_on_open"] is False
+
+
 def test_server_rejects_invalid_saves(server):
     draft = ps.defaults()
     draft["hotkeys"]["toggle_replay"] = "R"
@@ -231,9 +327,41 @@ def test_server_refuses_other_sites(server):
     assert not server.settings_file.exists()
 
 
+def test_preview_footage_is_the_newest_clip_served_in_ranges(tmp_path):
+    clips = tmp_path / "matches"
+    (clips / "old").mkdir(parents=True)
+    (clips / "new").mkdir()
+    old = clips / "old" / "match.mp4"
+    old.write_bytes(b"stale" * 20)
+    os.utime(old, (1, 1))
+    data = bytes(range(256)) * 4
+    (clips / "new" / "match.mp4").write_bytes(data)
+    srv = SettingsServer(tmp_path / "player-settings.json", 0, clips)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        _, _, snapshot = _request(srv, "GET", "/api/settings")
+        assert snapshot["footage"].startswith("/api/footage?v=")
+        status, kind, body = _request(srv, "GET", snapshot["footage"])
+        assert (status, kind, body) == (200, "video/mp4", data)
+        ranged = lambda r: _request(srv, "GET", "/api/footage", headers={"Range": r})[::2]
+        assert ranged("bytes=10-19") == (206, data[10:20])
+        assert ranged("bytes=1000-") == (206, data[1000:])
+        assert ranged("bytes=-4") == (206, data[-4:])
+        assert ranged("bytes=5000-")[0] == 416
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_without_footage_the_preview_keeps_its_drawing(server):
+    assert _request(server, "GET", "/api/settings")[2]["footage"] is None
+    assert _request(server, "GET", "/api/footage")[0] == 404
+
+
 def test_server_serves_only_its_static_files(server):
     status, kind, body = _request(server, "GET", "/")
-    assert status == 200 and kind.startswith("text/html") and b"Smart Replay" in body
+    assert status == 200 and kind.startswith("text/html") and b'alt="deja"' in body
     assert _request(server, "GET", "/app.js")[1].startswith("text/javascript")
+    assert _request(server, "GET", "/logo.svg")[1] == "image/svg+xml"
     assert _request(server, "GET", "/../player_settings.py")[0] == 404
     assert _request(server, "GET", "/%2e%2e/server.py")[0] == 404

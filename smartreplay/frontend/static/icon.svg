@@ -1,6 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="8" fill="#163a45"/>
-  <path d="M9.5 11.5A8 8 0 1 1 8 16" fill="none" stroke="#46b6cc" stroke-width="2.6" stroke-linecap="round"/>
-  <path d="M5.5 9.5 9.8 12l.4-5" fill="none" stroke="#46b6cc" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M14 12.2v7.6l6-3.8z" fill="#d8f5fc"/>
+  <defs>
+    <linearGradient id="tile" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="32" y2="32">
+      <stop offset="0" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#c026d3"/>
+    </linearGradient>
+  </defs>
+  <!-- deja's D: a play button -->
+  <rect width="32" height="32" rx="8" fill="url(#tile)"/>
+  <path d="M8.5 9a2 2 0 0 1 2-2h5a9 9 0 0 1 0 18h-5a2 2 0 0 1-2-2Z" fill="#fff"/>
+  <path d="M13.5 11.5 20 16l-6.5 4.5Z" fill="url(#tile)" stroke="url(#tile)" stroke-width="1" stroke-linejoin="round"/>
 </svg>

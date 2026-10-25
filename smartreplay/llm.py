@@ -6,6 +6,7 @@ fixed structure (via a forced tool call, so the model cannot answer in prose):
     plan(query, game, catalog)      -> RequestSpec fields   (text in, ~1 call per request)
     label_groups(game, groups)      -> {group id: concept}  (once per game, cached)
     check(images, question)         -> yes / no / unsure + box  (vision, per candidate)
+    find_in_speech(query, game, transcript) -> time spans + how clear  (text, per request)
 
 Keeping the model's job this small is what makes the rest deterministic,
 testable and fast: the model turns a request into structure, and plain code
@@ -173,6 +174,50 @@ DESCRIBE_TOOL = {
 }
 
 
+SPEECH_TOOL = {
+    "name": "speech_spans",
+    "description": "Where in the transcript a request's moment is talked about.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "spans": {
+                "type": "array",
+                "description": "Every stretch of speech the request could refer to, best first. "
+                               "Empty if nothing said fits.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "t0": {"type": "number", "description": "seconds: when the moment begins "
+                                                                "being described"},
+                        "t1": {"type": "number", "description": "seconds: when that description ends"},
+                        "clear": {"type": "boolean",
+                                  "description": "true only if the words alone settle that this is "
+                                                 "the requested moment; false if it is a plausible "
+                                                 "candidate the words cannot confirm"},
+                        "narrated": {"type": "boolean",
+                                     "description": "true if the words call the moment while it is "
+                                                    "being shown - play-by-play, or talking over its "
+                                                    "replay; false if they only refer to it (a stat, a "
+                                                    "recap, a mention of something earlier or "
+                                                    "off-screen)"},
+                        "quote": {"type": "string", "description": "the words the span rests on"},
+                        "why": {"type": "string"},
+                    },
+                    "required": ["t0", "t1", "clear", "narrated", "quote", "why"],
+                },
+            },
+            "visual_question": {
+                "type": "string",
+                "description": "One yes/no question a person could answer from screenshots of a "
+                               "candidate moment to tell whether it is the requested one. Name what "
+                               "would be visible (an action, a score or clock graphic, a banner).",
+            },
+        },
+        "required": ["spans", "visual_question"],
+    },
+}
+
+
 def plan_tool(catalog: list[str]) -> dict:
     """The plan schema, with the anchor constrained to this recording's names."""
     tool = json.loads(json.dumps(PLAN_TOOL))
@@ -266,6 +311,22 @@ class ClaudeLLM:
                                          "data": _jpeg_b64(im)}} for im in images]
         content.append({"type": "text", "text": question})
         return self._call(CHECK_TOOL, content, max_tokens=400)
+
+    def find_in_speech(self, query: str, game: str, transcript: str) -> dict:
+        text = (f"Recording: {game}\nRequest: {query!r}\n"
+                "Below is what is said in the recording (commentary, voice chat or narration), one "
+                "line per utterance, each with its start time in seconds. Speech recognition is "
+                "noisy: names are often misspelled or split, so match by sound and by meaning, not "
+                "spelling. A moment is usually described as it happens and sometimes again on a "
+                "replay; one span should cover both. The request may be worded as a fan or player "
+                "would say it, as a reaction or opinion rather than a description - work out which "
+                "moment it is about. Mark a span clear only if the words identify the moment "
+                "beyond reasonable doubt; when several moments could fit and the words cannot tell "
+                "them apart, return each as unclear. Being talked about is not being shown: mark a "
+                "span narrated only when the words call the action as it plays (or over its "
+                "replay), not when they cite it as a stat or recap. Quote the words verbatim from "
+                "the transcript.\n\n" + transcript)
+        return self._call(SPEECH_TOOL, [{"type": "text", "text": text}], max_tokens=1500)
 
 
 class _Worker:
@@ -465,15 +526,17 @@ class ClaudeCLILLM(ClaudeLLM):
         """Start warm workers for every call shape now, before any request."""
         if self.pool is not None:
             self.pool.start([PLAN_TOOL["input_schema"], LABEL_TOOL["input_schema"],
-                             CHECK_TOOL["input_schema"], DESCRIBE_TOOL["input_schema"]],
-                            [1, 1, self.pool.size, self.pool.size])
+                             CHECK_TOOL["input_schema"], DESCRIBE_TOOL["input_schema"],
+                             SPEECH_TOOL["input_schema"]],
+                            [1, 1, self.pool.size, self.pool.size, 1])
 
 
 class FakeLLM:
     """Replays canned answers; records every call. For tests and offline runs."""
 
-    def __init__(self, plan: dict | None = None, labels: dict | None = None, checks=None):
-        self._plan, self._labels = plan, labels or {"labels": []}
+    def __init__(self, plan: dict | None = None, labels: dict | None = None, checks=None,
+                 speech: dict | None = None):
+        self._plan, self._labels, self._speech = plan, labels or {"labels": []}, speech
         self._checks = checks or (lambda images, q: {"answer": "unsure", "box": None, "why": "fake"})
         self.calls: list[tuple] = []
 
@@ -492,6 +555,10 @@ class FakeLLM:
     def describe(self, images, game, kind):
         self.calls.append(("describe", kind))
         return {"what_happened": "", "on_screen_text": [], "facts": {}}
+
+    def find_in_speech(self, query, game, transcript):
+        self.calls.append(("speech", query))
+        return self._speech or {"spans": [], "visual_question": query}
 
 
 def default_llm() -> LLM:

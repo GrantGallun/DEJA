@@ -1,0 +1,9 @@
+# Recent-first replay, optional full history
+
+The user wants 7 to immediately show what just happened: default initial position is five seconds before the latest captured moment, with an adjustable setting. The full session remains accessible if requested. Keep 7 show/hide, 8 input routing, outside-click return, recording and RAM limits intact.
+
+Separate initial position from seek bounds. Quick opening exports enough recent footage for the configured lookback (at least the existing 30-second quick window), exposes that whole quick window, and initially seeks five seconds before its fixed cutoff. Add playback.start_behind_live_s (integer 1–300, default 5) to both settings validators and the settings page. Imported file opening keeps its prior start behavior; explicit question-selected intervals retain their exact bounds.
+
+Add a native Full history action that expands the timeline on demand. It exports the persistent session only when requested, so ordinary quick opening does not copy an entire long session. It preserves the current session playhead through the media switch using snapshot origin/end metadata. Capture continues. Generation fencing and media retirement keep canceled exports or decoder leases from replacing/deleting the wrong replay. While controls are held, reaching the cutoff should hold the last moment rather than closing before the viewer can choose history.
+
+Test native/Python defaults, range validation and persistence, short warm-up clips, changed lookback, full seek bounds, explicit selected intervals, archive timeline offsets, full history beyond ring retention, continued recording and paused/finished replay behavior. Use generated/offscreen tests; no Computer Use or automated game input. Preserve the active session before a necessary native restart and wait for Stop to finish before stopping the launcher.

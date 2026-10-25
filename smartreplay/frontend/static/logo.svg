@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 2 226 66" role="img" aria-labelledby="deja-title">
+  <title id="deja-title">deja</title>
+  <defs>
+    <linearGradient id="deja-ink" gradientUnits="userSpaceOnUse" x1="0" y1="10" x2="226" y2="62">
+      <stop offset="0" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#d946ef"/>
+    </linearGradient>
+    <mask id="deja-play">
+      <rect x="0" y="0" width="226" height="72" fill="#fff"/>
+      <path d="M22 24 40 36 22 48Z" fill="#000" stroke="#000" stroke-width="3" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+  <!-- D: a play button. The other letters are drawn at its weight (13). -->
+  <path d="M8 14a4 4 0 0 1 4-4h12a26 26 0 0 1 0 52H12a4 4 0 0 1-4-4Z" fill="url(#deja-ink)" mask="url(#deja-play)"/>
+  <g fill="none" stroke="url(#deja-ink)" stroke-width="13" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M92 16.5H67.5v39H92M67.5 36H88"/>
+    <path d="M140 16.5v27a12 12 0 0 1-24 0"/>
+    <path d="M164 55.5 188 16.5l24 39"/>
+  </g>
+  <!-- A: its crossbar is a rewind -->
+  <path d="M187 44v10l-8-5Zm8 0v10l-8-5Z" fill="url(#deja-ink)" stroke="url(#deja-ink)" stroke-width="2" stroke-linejoin="round"/>
+</svg>

@@ -5,30 +5,33 @@
 // what fits here fits there.
 
 const HOTKEYS = [
-  ["toggle_replay", "Show / hide replay", "Opens the last 30 seconds, or closes the replay."],
-  ["toggle_controls", "Take / return controls", "Moves your keys to the player and back to the game. Does not show or hide it."],
+  ["toggle_replay", "Show / hide replay", "Opens your recent replay at the configured lookback, or closes it."],
+  ["toggle_controls", "Take / return controls", "Summons a hidden replay and takes controls, or returns controls to the game."],
+  ["push_to_talk", "Hold to ask about gameplay", "Hold to speak, then release to find and replay a matching moment. Uses the native recorder's microphone."],
   ["quit", "Quit player", "Closes the replay player."],
 ];
 const PLAYER_KEYS = [
   ["play_pause", "Play / pause"], ["seek_back", "Seek back"], ["seek_forward", "Seek forward"],
   ["speed_down", "Slower"], ["speed_up", "Faster"], ["mute", "Mute"],
-  ["restart", "Jump to start"], ["expand", "Expand to screen"], ["close", "Close replay"],
+  ["restart", "Jump to start"], ["history", "Full history"], ["expand", "Expand to screen"], ["close", "Close replay"],
 ];
 const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4];
-const SIZES = [["Small", 400, 280], ["Medium", 536, 374], ["Large", 720, 480], ["Huge", 960, 600]];
+// Preset widths; the height fits a 16:9 video plus whatever chrome is on.
+const SIZES = [["Small", 400], ["Medium", 536], ["Large", 720], ["Huge", 960]];
 const ANCHORS = ["top_left", "top_center", "top_right", "middle_left", "center", "middle_right",
                  "bottom_left", "bottom_center", "bottom_right"];
 const COLOURS = [["background", "Video background"], ["panel", "Control panel"], ["header", "Title bar"],
                  ["header_active", "Title bar in control"], ["text", "Text"], ["muted", "Secondary text"],
                  ["accent", "Accent"]];
-const THEME_NAMES = { slate: "Slate", midnight: "Midnight", ember: "Ember", paper: "Paper", contrast: "High contrast" };
+const THEME_NAMES = { slate: "Slate", midnight: "Midnight", violet: "Violet", ember: "Ember", paper: "Paper",
+                      contrast: "High contrast" };
 // Shared with player_settings.BUTTON_WIDTHS and ReplayWindow.qml.
 const BTN_W = { seek: 53, play_pause: 58, speed: 39, mute: 57, expand: 40, close: 34 };
 const KEY_SYMBOLS = { Left: "←", Right: "→", Up: "↑", Down: "↓" };
 
 const state = {
   saved: null, draft: null, defaults: null, themes: {}, issues: [],
-  status: { running: false }, path: "", pvState: "passive", savedAt: 0,
+  status: { running: false }, path: "", pvState: "passive", savedAt: 0, footage: null, providers: {},
 };
 const syncers = [];
 
@@ -125,7 +128,7 @@ function captureProblem(mods, key, isGlobal, metaKey) {
   if (metaKey) return "The Windows key is reserved for system shortcuts.";
   if (!key) return "That key isn't supported.";
   if (!isGlobal) return null;
-  if (!mods.length) return "Add Ctrl, Alt or Shift so the game keeps this key.";
+  if (!mods.length && !/^[0-9]$/.test(key)) return "Use a number-row digit, or add Ctrl, Alt or Shift.";
   if (!/^([A-Z0-9]|F\d{1,2})$/.test(key)) return "Global hotkeys use a letter, digit or F-key.";
   if (mods.length === 1 && mods[0] === "Alt" && key === "F4") return "Alt+F4 is reserved by Windows.";
   return null;
@@ -155,7 +158,7 @@ function keyCapture({ isGlobal, path, label }) {
     btn.replaceChildren(h("span", { class: "prompt" }, "Press keys…"));
     msg.hidden = false;
     msg.className = "key-msg";
-    msg.textContent = isGlobal ? "Hold Ctrl, Alt or Shift and press a key. Tab cancels." : "Press a key. Tab cancels.";
+    msg.textContent = isGlobal ? "Press a number-row digit, or hold Ctrl, Alt or Shift and press a key. Tab cancels." : "Press a key. Tab cancels.";
   };
   btn.addEventListener("click", () => {
     if (performance.now() - endedAt < 350) return; // the Space/Enter that ended a capture
@@ -332,15 +335,17 @@ function behaviourRows(s) {
       ["Passive replay", "Clickable: click it to take controls."],
       ["Take controls", or("Click the player", tc())],
       ["Give controls back", or("Click the game", tc())],
-      ["Playback", "Buttons and timeline. Player keys are off."],
-      ["Move and resize", "Drag the title bar (or the video when the title bar is hidden); drag the bottom-right corner."],
+      ["Playback", "Buttons and timeline; scroll to magnify, drag to pan. Player keys are off."],
+      ["Move and resize", "Drag the title bar (or the video when the title bar is hidden); drag any edge or corner."],
     ],
     hybrid: [
       ["Passive replay", "Click-through: the game gets every click."],
       ["Take controls", tc() || "No hotkey set"],
       ["Give controls back", or(tc(), "click the game")],
-      ["Playback", ["Player keys (", ...keyList, "…), buttons and timeline."]],
-      ["Move and resize", "Drag the title bar; drag the bottom-right corner. Double-click the title bar to fill the screen."],
+      ["Playback", ["Player keys (", ...keyList, "…), buttons and timeline; scroll to magnify, drag to pan."]],
+      ["Move and resize", s.appearance.show_header
+        ? "Drag the title bar; drag any edge or corner. Double-click the title bar to fill the screen."
+        : "Drag the video; drag any edge or corner. Double-click the video to fill the screen."],
     ],
   }[s.input.mode];
   rows.push(["Close", [tr(), " any time, from anywhere"]]);
@@ -359,20 +364,49 @@ function buildFocus() {
   });
 }
 
+// Height of the title bar and control panel, as ReplayWindow.qml lays them
+// out. Minimal controls sit on the video and take none.
+function chromeHeight(s) {
+  const a = s.appearance, btn = Math.round(28 * a.font_scale);
+  const header = a.show_header ? Math.round(36 * a.font_scale) : 0;
+  const info = a.show_status ? 6 + Math.round(14 * a.font_scale) : 0;
+  const controls = { full: 8 + 20 + 6 + btn + info + 8, compact: 8 + btn + 8, timeline: 8 + 20 + 8 }[a.controls] || 0;
+  return header + controls;
+}
+const presetHeight = (s, w) => Math.round((w * 9) / 16) + chromeHeight(s);
+
 function buildSize() {
   const chips = $("#size-presets");
-  for (const [name, w, hgt] of SIZES) {
+  for (const [name, w] of SIZES) {
+    const dims = h("small");
     const b = h("button", { type: "button", class: "chip", onclick: () => {
-      state.draft.layout.width = w; state.draft.layout.height = hgt; changed();
-    } }, name, h("small", {}, `${w}×${hgt}`));
+      state.draft.layout.width = w; state.draft.layout.height = presetHeight(state.draft, w); changed();
+    } }, name, dims);
     chips.append(b);
-    syncers.push(() => b.setAttribute("aria-pressed", state.draft.layout.width === w && state.draft.layout.height === hgt));
+    syncers.push(() => {
+      const hgt = presetHeight(state.draft, w);
+      dims.textContent = `${w}×${hgt}`;
+      b.setAttribute("aria-pressed", state.draft.layout.width === w && state.draft.layout.height === hgt);
+    });
   }
   radioButtons($("#anchor-grid"), ANCHORS, {
     columns: 3,
     current: () => state.draft.layout.anchor,
     choose: (v) => { state.draft.layout.anchor = v; changed(); },
     render: (v) => h("span", { class: "sr-only" }, v.replace("_", " ")),
+  });
+}
+
+function buildModel() {
+  const note = $("#provider-note");
+  syncers.push(() => {
+    const deepseek = state.draft.model.provider === "deepseek";
+    const hasKey = state.providers.deepseek?.key;
+    note.hidden = !deepseek;
+    note.className = "banner " + (hasKey ? "info" : "warn");
+    note.textContent = hasKey
+      ? "DeepSeek API key found."
+      : "No DeepSeek API key found. Add DEEPSEEK_API_KEY=… to the .env file in the Smart Replay folder, then save again.";
   });
 }
 
@@ -451,9 +485,12 @@ function buildButtons() {
   syncers.push(() => {
     const s = state.draft;
     const layout = s.appearance.controls;
-    $("#buttons-lede").textContent = layout === "full" || layout === "compact"
+    const shown = layout === "full" || layout === "compact";
+    const layoutName = { minimal: "Minimal", timeline: "Timeline only", none: "Video only" }[layout];
+    $("#buttons-lede").textContent = shown
       ? "Shown in the player's controls."
-      : `Hidden: the controls are set to “${layout === "none" ? "Video only" : "Timeline only"}” under Appearance.`;
+      : `Hidden: the controls are set to “${layoutName}” under Appearance.`;
+    meter.hidden = !shown;
     const need = buttonRowWidth(s) + (layout === "compact" ? 136 : 0);
     const have = s.layout.width;
     meter.className = "meter" + (need > have ? " over" : "");
@@ -485,6 +522,77 @@ function buttonRowWidth(s) {
 
 // ------------------------------------------------------------------ preview
 
+// Real footage when the server has a recording: it plays in the mock player,
+// and the same recording further along stands in for the game behind it. The
+// elements persist across renders, so changing a setting never restarts them.
+const footage = { player: null, backdrop: null };
+const stillMotion = matchMedia("(prefers-reduced-motion: reduce)");
+// Magnification as ReplayWindow.qml models it: the picture's offset as a
+// fraction of its frame, in [1 - z, 0].
+const zoom = { z: 1, x: 0, y: 0 };
+const clampPan = (v) => Math.max(1 - zoom.z, Math.min(0, v));
+
+function zoomAt(fx, fy, factor) {
+  const next = Math.max(1, Math.min(4, zoom.z * factor));
+  const cx = (fx - zoom.x) / zoom.z, cy = (fy - zoom.y) / zoom.z;  // the point under the pointer stays put
+  zoom.z = next;
+  zoom.x = clampPan(fx - cx * next);
+  zoom.y = clampPan(fy - cy * next);
+}
+
+function positionFootage() {
+  Object.assign(footage.player.style, {
+    left: `${zoom.x * 100}%`, top: `${zoom.y * 100}%`, width: `${zoom.z * 100}%`, height: `${zoom.z * 100}%`,
+  });
+}
+
+function footageVideo(className, startAt) {
+  const v = h("video", { class: className, loop: true, playsinline: true, preload: "auto", "aria-hidden": "true" });
+  v.muted = true;
+  v.addEventListener("loadedmetadata", () => {
+    v.currentTime = v.duration * startAt;
+    if (!stillMotion.matches) v.play().catch(() => {});
+  }, { once: true });
+  v.src = state.footage;
+  return v;
+}
+
+function setupFootage() {
+  if (!state.footage) return;
+  footage.player = footageVideo("pv-footage", 0.1);
+  footage.backdrop = footageVideo("pv-backdrop", 0.55);
+  const stage = $("#pv-stage");
+  stage.prepend(footage.backdrop);
+  stage.classList.add("has-footage");
+  // Scroll magnifies and dragging pans, as in the player.
+  stage.addEventListener("wheel", (e) => {
+    const frame = e.target.closest(".pv-video");
+    if (!frame) return;
+    e.preventDefault();
+    const r = frame.getBoundingClientRect();
+    const dy = e.deltaY * (e.deltaMode === 1 ? 40 : 1);
+    zoomAt((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height, Math.pow(1.0015, -dy));
+    renderPlayer();
+  }, { passive: false });
+  let pan = null;
+  stage.addEventListener("pointerdown", (e) => {
+    const frame = e.target.closest(".pv-video");
+    if (!frame || zoom.z <= 1) return;
+    const r = frame.getBoundingClientRect();
+    pan = { id: e.pointerId, x: e.clientX, y: e.clientY, zx: zoom.x, zy: zoom.y, w: r.width, h: r.height };
+    stage.setPointerCapture(e.pointerId);
+  });
+  stage.addEventListener("pointermove", (e) => {
+    if (!pan || e.pointerId !== pan.id) return;
+    zoom.x = clampPan(pan.zx + (e.clientX - pan.x) / pan.w);
+    zoom.y = clampPan(pan.zy + (e.clientY - pan.y) / pan.h);
+    positionFootage();
+  });
+  const endPan = () => { pan = null; };
+  stage.addEventListener("pointerup", endPan);
+  stage.addEventListener("pointercancel", endPan);
+}
+
 function hintText(s, active) {
   const tc = plainChord(s.hotkeys.toggle_controls);
   if (s.input.mode === "mouse") {
@@ -510,7 +618,7 @@ function renderPlayer() {
   const active = state.pvState === "controls";
   const W = s.layout.width, H = s.layout.height;
   const p = $("#pv-player");
-  p.className = "pv-player" + (active ? " active" : "");
+  p.className = "pv-player" + (active ? " active" : "") + (footage.player && zoom.z > 1 ? " zoomed" : "");
   Object.assign(p.style, { width: px(W), height: px(H), opacity: active ? a.active_opacity : a.passive_opacity });
   for (const [k, v] of Object.entries({ "--c-bg": c.background, "--c-panel": c.panel, "--c-header": c.header,
     "--c-header-active": c.header_active, "--c-text": c.text, "--c-muted": c.muted, "--c-accent": c.accent })) {
@@ -519,14 +627,27 @@ function renderPlayer() {
   const parts = [];
   if (a.show_header) {
     parts.push(h("div", { class: "pv-header", style: { height: px(36 * fs) } },
-      h("span", { class: "pv-title", style: { fontSize: px(12 * fs) } }, "REPLAY"),
       h("span", { class: "pv-hint", style: { fontSize: px(11 * fs) } }, hintText(s, active))));
   }
+  const layout = a.controls;
+  const minimal = layout === "minimal";
   const fit = { fit: "contain", crop: "cover", stretch: "100% 100%" }[s.layout.fill];
-  const video = h("div", { class: "pv-video", style: { backgroundSize: fit, backgroundColor: c.background } });
-  if (a.show_key_hints && active && s.input.mode !== "mouse") {
-    video.append(h("div", { class: "pv-legend", style: { height: px(22 * fs), fontSize: px(11 * fs) } }, legend(s)));
+  const video = h("div", { class: "pv-video" + (footage.player ? " live" : ""),
+                           style: { backgroundSize: fit, backgroundColor: c.background } });
+  if (footage.player) {
+    footage.player.style.objectFit = { fit: "contain", crop: "cover", stretch: "fill" }[s.layout.fill];
+    positionFootage();
+    video.append(footage.player);
   }
+  // Minimal controls' state badge; here only magnification can differ from plain playback.
+  if (minimal && zoom.z > 1.01) {
+    video.append(h("div", { class: "pv-badge", style: { fontSize: px(11 * fs) } }, `Zoom ${zoom.z.toFixed(1)}×`));
+  }
+  if (a.show_key_hints && active && s.input.mode !== "mouse") {
+    video.append(h("div", { class: "pv-legend", style: { height: px(22 * fs), fontSize: px(11 * fs), bottom: minimal ? "12px" : 0 } }, legend(s)));
+  }
+  // Minimal: a 3 px timeline on the video's bottom edge (a 12 px grab strip in the player).
+  if (minimal) video.append(h("div", { class: "pv-line" }, h("div", { class: "fill", style: { width: "40%" } })));
   parts.push(video);
 
   const slider = (style = {}) => h("div", { class: "pv-slider", style }, h("div", { class: "track" },
@@ -536,8 +657,7 @@ function renderPlayer() {
     class: "pv-btn" + (b.on ? " on" : ""),
     style: { width: px(BTN_W[b.id] * fs), height: px(28 * fs), fontSize: px(12 * fs) },
   }, b.label));
-  const layout = a.controls;
-  if (layout !== "none") {
+  if (layout !== "none" && !minimal) {
     const panel = h("div", { class: "pv-controls" });
     if (layout === "full") {
       panel.append(h("div", { class: "pv-row" }, slider()));
@@ -560,13 +680,17 @@ function renderPlayer() {
   if (a.focus_outline && active) parts.push(h("div", { class: "pv-outline" }));
   if (active && s.input.mode !== "keyboard") parts.push(h("div", { class: "pv-grip" }));
   p.replaceChildren(...parts);
+  // Re-parenting can pause a playing video; carry on.
+  const v = footage.player;
+  if (v && v.paused && v.readyState > 0 && !stillMotion.matches) v.play().catch(() => {});
 
   const stage = $("#pv-stage");
   const scale = Math.min(1, (stage.clientWidth - 28) / W, (stage.clientHeight - 28) / H);
   const wrap = $("#pv-scale");
   Object.assign(wrap.style, { width: px(W), height: px(H), transform: `translate(-50%, -50%) scale(${scale})` });
   const how = { keyboard: "keyboard only", mouse: "mouse only", hybrid: "keyboard + mouse" }[s.input.mode];
-  $("#pv-caption").textContent = `${W} × ${H} px, shown at ${Math.round(scale * 100)}% · ${active ? "in control" : "passive"} · ${how}`;
+  $("#pv-caption").textContent = `${W} × ${H} px, shown at ${Math.round(scale * 100)}% · ${active ? "in control" : "passive"} · ${how}`
+    + (footage.player ? " · your latest replay, scroll it to magnify" : "");
   renderScreen();
 }
 
@@ -714,6 +838,8 @@ function accept(snapshot) {
   state.issues = snapshot.issues || [];
   state.status = snapshot.status || { running: false };
   state.path = snapshot.path;
+  state.footage ??= snapshot.footage || null;  // keep playing the clip the page started with
+  state.providers = snapshot.providers || {};
   $("#file-path").textContent = snapshot.path;
   const loadErrors = (snapshot.issues || []).filter((i) => i.level === "error");
   const banner = $("#load-error");
@@ -777,12 +903,14 @@ async function boot() {
     return;
   }
   accept(res.data);
+  setupFootage();
   bindInputs();
   buildFocus();
   buildHotkeys();
   buildSize();
   buildLook();
   buildButtons();
+  buildModel();
   wireChrome();
   render();
   validate();

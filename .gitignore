@@ -3,6 +3,9 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
+# Local credentials
+/.env
+
 # Large media and generated results
 footage/*.mp4
 footage/*.mkv
@@ -22,6 +25,11 @@ audit/results/same_stem_out/
 experiments/
 _vizdoom.ini
 footage/**/*.mp4
+footage/**/*.m4a
 footage/**/*.part
 footage/**/*.ocr.jsonl
+footage/**/*.speech.jsonl
 profiles/
+
+# Local tool configuration
+.claude/
